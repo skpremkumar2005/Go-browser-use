@@ -1,0 +1,57 @@
+# Cache files
+.DS_Store
+__pycache__/
+*.py[cod]
+*$py.class
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.ipynb_checkpoints
+~/
+node_modules/
+# Virtual Environments
+.venv*
+venv/
+
+# IDEs
+.vscode/
+.idea/
+
+# Build files
+dist/
+
+
+!apps/nodejs_microservices/browser_use/browser_use_webrtc/unified-browser-platform/python-agent/requirement.txt
+!apps/nodejs_microservices/browser_use/browser_use_webrtc/unified-browser-platform/.env
+!requirements.txt
+# Data files
+*.gif
+*.txt
+*.pdf
+*.csv
+
+*.jsonl
+*.log
+*.bak
+
+# Secrets and sensitive files
+browser_cookies.json
+cookies.json
+gcp-login.json
+saved_trajectories/
+old_tests/
+AgentHistory.json
+AgentHistoryList.json
+private_example.py
+private_example
+CLAUDE.local.md
+
+uv.lock
+temp
+tmp
+
+# Google API credentials
+credentials.json
+token.json
+
+!docs/docs.json

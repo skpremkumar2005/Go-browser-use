@@ -1,0 +1,691 @@
+package browser
+
+import (
+	"fmt"
+	"html/template"
+	"log"
+	"net/http"
+	"os"
+	"time"
+
+	"go-webrtc/cmd/script-server/config"
+	"go-webrtc/cmd/script-server/libs/shared/helpers"
+
+	"github.com/gorilla/websocket"
+	"github.com/labstack/echo/v4"
+)
+
+// Handler interface defines HTTP handlers for browser operations
+type Handler interface {
+	Route(g *echo.Group)
+
+	// Browser Session Handlers
+	CreateBrowserSession(c echo.Context) error
+	GetBrowserSession(c echo.Context) error
+	ListBrowserSessions(c echo.Context) error
+
+	// Script Task Handlers
+	CreateScriptTask(c echo.Context) error
+	GetScriptTask(c echo.Context) error
+	ListScriptTasks(c echo.Context) error
+
+	// Browser Action Handlers
+	ExecuteBrowserAction(c echo.Context) error
+	CaptureScreenshot(c echo.Context) error
+
+	// System Status Handlers
+	GetSystemStatus(c echo.Context) error
+
+	// Streaming Handlers
+	HandleWebSocket(c echo.Context) error
+	StartStreamingSession(c echo.Context) error
+	StopStreamingSession(c echo.Context) error
+	ResetStreamingSession(c echo.Context) error
+	StreamScreencast(c echo.Context) error
+	
+	// Execute endpoint (same as old code)
+	ExecuteTaskAndStream(c echo.Context) error
+
+	// Live Page Handlers
+	LiveAutomationPage(c echo.Context) error
+}
+
+// handler implements the Handler interface
+type handler struct {
+	service Service
+	config  *config.Config
+}
+
+// NewHandler creates a new handler instance
+func NewHandler(service Service, cfg *config.Config) Handler {
+	return &handler{
+		service: service,
+		config:  cfg,
+	}
+}
+
+// Browser Session Handlers
+
+func (h *handler) CreateBrowserSession(c echo.Context) error {
+	data := c.Get("createBrowserSession").(CreateBrowserSessionDto)
+	
+	session, err := h.service.CreateBrowserSession(data)
+	if err != nil {
+		return helpers.RespFailure(c, "Failed to create browser session", err)
+	}
+	
+	return helpers.RespSuccess(c, "Browser session created successfully", session)
+}
+
+func (h *handler) GetBrowserSession(c echo.Context) error {
+	sessionID := c.Get("sessionId").(string)
+	
+	session, err := h.service.GetBrowserSession(sessionID)
+	if err != nil {
+		return helpers.RespFailure(c, "Failed to get browser session", err)
+	}
+	
+	return helpers.RespSuccess(c, "Browser session retrieved successfully", session)
+}
+
+func (h *handler) ListBrowserSessions(c echo.Context) error {
+	sessions, err := h.service.ListBrowserSessions()
+	if err != nil {
+		return helpers.RespFailure(c, "Failed to list browser sessions", err)
+	}
+	
+	return helpers.RespSuccess(c, "Browser sessions retrieved successfully", map[string]interface{}{
+		"sessions": sessions,
+		"count":    len(sessions),
+	})
+}
+
+// Script Task Handlers
+
+func (h *handler) CreateScriptTask(c echo.Context) error {
+	data := c.Get("scriptTaskRequest").(ScriptTaskRequestDto)
+	
+	task, err := h.service.CreateScriptTask(data)
+	if err != nil {
+		return helpers.RespFailure(c, "Failed to create script task", err)
+	}
+	
+	return helpers.RespSuccess(c, "Script task created successfully", task)
+}
+
+func (h *handler) GetScriptTask(c echo.Context) error {
+	sessionID := c.Get("sessionId").(string)
+	
+	task, err := h.service.GetScriptTask(sessionID)
+	if err != nil {
+		return helpers.RespFailure(c, "Failed to get script task", err)
+	}
+	
+	return helpers.RespSuccess(c, "Script task retrieved successfully", task)
+}
+
+func (h *handler) ListScriptTasks(c echo.Context) error {
+	tasks, err := h.service.ListScriptTasks()
+	if err != nil {
+		return helpers.RespFailure(c, "Failed to list script tasks", err)
+	}
+	
+	return helpers.RespSuccess(c, "Script tasks retrieved successfully", map[string]interface{}{
+		"tasks": tasks,
+		"count": len(tasks),
+	})
+}
+
+// Browser Action Handlers
+
+func (h *handler) ExecuteBrowserAction(c echo.Context) error {
+	sessionID := c.Get("sessionId").(string)
+	action := c.Get("browserAction").(BrowserActionDto)
+	actionData := c.Get("actionData")
+	
+	err := h.service.ExecuteBrowserAction(sessionID, action, actionData)
+	if err != nil {
+		return helpers.RespFailure(c, "Failed to execute browser action", err)
+	}
+	
+	return helpers.RespSuccess(c, "Browser action executed successfully", nil)
+}
+
+func (h *handler) CaptureScreenshot(c echo.Context) error {
+	sessionID := c.Get("sessionId").(string)
+	
+	screenshot, err := h.service.CaptureScreenshot(sessionID)
+	if err != nil {
+		return helpers.RespFailure(c, "Failed to capture screenshot", err)
+	}
+	
+	return helpers.RespSuccess(c, "Screenshot captured successfully", map[string]string{
+		"image": screenshot,
+	})
+}
+
+// System Status Handlers
+
+func (h *handler) GetSystemStatus(c echo.Context) error {
+	status, err := h.service.GetSystemStatus()
+	if err != nil {
+		return helpers.RespFailure(c, "Failed to get system status", err)
+	}
+	
+	return helpers.RespSuccess(c, "System status retrieved successfully", status)
+}
+
+// WebSocket and Streaming Handlers
+
+func (h *handler) HandleWebSocket(c echo.Context) error {
+	sessionID := c.Get("sessionId").(string)
+	
+	upgrader := websocket.Upgrader{
+		CheckOrigin: func(r *http.Request) bool {
+			return true // Allow connections from any origin in development
+		},
+	}
+	
+	ws, err := upgrader.Upgrade(c.Response(), c.Request(), nil)
+	if err != nil {
+		log.Printf("❌ WebSocket upgrade failed for session %s: %v", sessionID, err)
+		return helpers.RespFailure(c, "WebSocket upgrade failed", err)
+	}
+	defer ws.Close()
+	
+	log.Printf("🔌 WebSocket connected for session %s", sessionID)
+	
+	// Add panic recovery to prevent server crashes
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("❌ WebSocket panic recovered for session %s: %v", sessionID, r)
+		}
+	}()
+	
+	// Set read and write timeouts to prevent hanging connections
+	ws.SetReadDeadline(time.Now().Add(60 * time.Second))
+	ws.SetWriteDeadline(time.Now().Add(10 * time.Second))
+	
+	// Handle WebSocket messages with improved error handling
+	for {
+		var msg map[string]interface{}
+		
+		// Reset read deadline for each message
+		ws.SetReadDeadline(time.Now().Add(60 * time.Second))
+		
+		err := ws.ReadJSON(&msg)
+		if err != nil {
+			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure, websocket.CloseNormalClosure) {
+				log.Printf("❌ WebSocket error for session %s: %v", sessionID, err)
+			} else {
+				log.Printf("🔌 WebSocket closed normally for session %s", sessionID)
+			}
+			break
+		}
+		
+		log.Printf("📨 WebSocket message received for session %s: %+v", sessionID, msg)
+		
+		// Echo back the message for now (can be extended for specific commands)
+		response := map[string]interface{}{
+			"type":      "response",
+			"sessionId": sessionID,
+			"message":   "Message received",
+			"original":  msg,
+		}
+		
+		// Reset write deadline before sending response
+		ws.SetWriteDeadline(time.Now().Add(10 * time.Second))
+		
+		if err := ws.WriteJSON(response); err != nil {
+			log.Printf("❌ WebSocket write error for session %s: %v", sessionID, err)
+			break
+		}
+	}
+	
+	log.Printf("🔌 WebSocket disconnected for session %s", sessionID)
+	return nil
+}
+
+func (h *handler) StartStreamingSession(c echo.Context) error {
+	sessionID := c.Get("sessionId").(string)
+	
+	// Get frame channel from service
+	frameChannel, err := h.service.StreamScreencast(sessionID)
+	if err != nil {
+		return helpers.RespFailure(c, "Failed to start streaming session", err)
+	}
+	
+	// Set headers for MJPEG stream
+	c.Response().Header().Set("Content-Type", "multipart/x-mixed-replace; boundary=frame")
+	c.Response().Header().Set("Cache-Control", "no-cache")
+	c.Response().Header().Set("Connection", "keep-alive")
+	c.Response().Header().Set("Access-Control-Allow-Origin", "*")
+	
+	// Write MJPEG frames with context cancellation
+	ctx := c.Request().Context()
+	frameCount := 0
+	
+	for {
+		select {
+		case <-ctx.Done():
+			log.Printf("📸 Client disconnected from streaming session %s after %d frames", sessionID, frameCount)
+			return nil
+		case frameData, ok := <-frameChannel:
+			if !ok {
+				log.Printf("📸 Frame channel closed for session %s after %d frames", sessionID, frameCount)
+				return nil
+			}
+			
+			frameCount++
+			
+			// Write MJPEG boundary
+			if _, err := c.Response().Writer.Write([]byte("\r\n--frame\r\n")); err != nil {
+				log.Printf("❌ Client disconnected during frame %d", frameCount)
+				return nil
+			}
+			
+			// Write content type header
+			if _, err := c.Response().Writer.Write([]byte("Content-Type: image/png\r\n")); err != nil {
+				log.Printf("❌ Client disconnected during frame %d", frameCount)
+				return nil
+			}
+			
+			// Write content length header
+			contentLength := fmt.Sprintf("Content-Length: %d\r\n\r\n", len(frameData))
+			if _, err := c.Response().Writer.Write([]byte(contentLength)); err != nil {
+				log.Printf("❌ Client disconnected during frame %d", frameCount)
+				return nil
+			}
+			
+			// Write image data
+			if _, err := c.Response().Writer.Write(frameData); err != nil {
+				log.Printf("❌ Client disconnected during frame %d", frameCount)
+				return nil
+			}
+			
+			// Flush the response
+			if flusher, ok := c.Response().Writer.(http.Flusher); ok {
+				flusher.Flush()
+			}
+			
+			// Log progress every 50 frames
+			if frameCount%50 == 0 {
+				log.Printf("📹 Streamed %d frames for session %s", frameCount, sessionID)
+			}
+		}
+	}
+}
+
+func (h *handler) StopStreamingSession(c echo.Context) error {
+	sessionID := c.Get("sessionId").(string)
+	
+	err := h.service.StopStreamingSession(sessionID)
+	if err != nil {
+		return helpers.RespFailure(c, "Failed to stop streaming session", err)
+	}
+	
+	return helpers.RespSuccess(c, "Streaming session stopped successfully", nil)
+}
+
+func (h *handler) ResetStreamingSession(c echo.Context) error {
+	sessionID := c.Get("sessionId").(string)
+	
+	err := h.service.ResetStreamingSession(sessionID)
+	if err != nil {
+		return helpers.RespFailure(c, "Failed to reset streaming session", err)
+	}
+	
+	return helpers.RespSuccess(c, "Streaming session reset successfully", nil)
+}
+
+// LiveAutomationPage serves the live automation page using live.html template
+func (h *handler) LiveAutomationPage(c echo.Context) error {
+	sessionID := c.Param("sessionId")
+	if sessionID == "" {
+		return helpers.RespBadRequest(c, "Session ID is required")
+	}
+	
+	// Template data matching the old code structure
+	// Get base URL for WebSocket connection
+	baseURL := c.Request().Host
+	
+	data := struct {
+		TaskID       string
+		Task         string
+		Status       string
+		CreatedAt    string
+		BrowserID    string
+		IsAutomation bool
+		WebSocketURL string
+	}{
+		TaskID:       sessionID,
+		Task:         "Browser automation session",
+		Status:       "active",
+		CreatedAt:    time.Now().Format("2006-01-02 15:04:05"),
+		BrowserID:    sessionID,
+		IsAutomation: true,
+		WebSocketURL: fmt.Sprintf("ws://%s/api/v1/browser_use/browser/ws/%s", baseURL, sessionID),
+	}
+	
+	// Find and parse the live.html template
+	templatePaths := []string{
+		"../../frontend/live.html",   // From cmd/script-server to root frontend
+		"../../../frontend/live.html", // Alternative path
+		"frontend/live.html",         // Current directory
+		"./live.html",               // Fallback
+	}
+	
+	var templatePath string
+	for _, path := range templatePaths {
+		if _, err := os.Stat(path); err == nil {
+			templatePath = path
+			log.Printf("📄 Found template at: %s", path)
+			break
+		}
+	}
+	
+	if templatePath == "" {
+		// Fallback: serve a basic HTML page if template not found
+		return c.HTML(200, fmt.Sprintf(`
+			<!DOCTYPE html>
+			<html>
+			<head>
+				<title>Live Browser Automation - Session %s</title>
+				<style>
+					body { margin: 0; padding: 20px; font-family: Arial, sans-serif; background: #1a1a1a; color: white; }
+					.container { max-width: 1400px; margin: 0 auto; }
+					.stream-container { text-align: center; border: 2px solid #4a4a4a; border-radius: 8px; padding: 10px; background: #2d2d2d; }
+					.stream-image { max-width: 100%%; height: auto; border-radius: 4px; }
+				</style>
+			</head>
+			<body>
+				<div class="container">
+					<h1>🤖 Live Browser Automation</h1>
+					<p>Session ID: <code>%s</code></p>
+					<div class="stream-container">
+						<img src="/api/v1/browser_use/browser/stream-screencast/%s" alt="Live stream" class="stream-image" />
+					</div>
+				</div>
+			</body>
+			</html>
+		`, sessionID, sessionID, sessionID))
+	}
+	
+	// Parse and execute the template
+	tmpl, err := template.ParseFiles(templatePath)
+	if err != nil {
+		log.Printf("Failed to parse live.html template: %v", err)
+		// Fallback to basic HTML
+		return c.HTML(200, "Template not found")
+	}
+	
+	// Set headers to allow inline content (fix CSP issues)
+	c.Response().Header().Set("Content-Type", "text/html; charset=utf-8")
+	c.Response().Header().Set("Content-Security-Policy", "default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob: ws: wss:; img-src 'self' data: blob: http: https:; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; connect-src 'self' ws: wss: http: https:;")
+	c.Response().Header().Set("X-Content-Type-Options", "nosniff")
+	
+	// Execute template with data
+	return tmpl.Execute(c.Response().Writer, data)
+}
+
+// StreamScreencast provides MJPEG streaming for live.html (EXACT COPY from old working code)
+func (h *handler) StreamScreencast(c echo.Context) error {
+	vars := map[string]string{"sessionId": c.Param("sessionId")}
+	sessionID := vars["sessionId"]
+	
+	if sessionID == "" {
+		log.Printf("❌ No session ID provided")
+		return c.String(http.StatusBadRequest, "Session ID is required")
+	}
+
+	log.Printf("📹 Starting MJPEG stream for session: %s", sessionID)
+
+	// Get script session to check if task exists and is running (from old code)
+	scriptSessionManager := h.service.(*serviceImpl).scriptManager
+	scriptSessionManager.mutex.RLock()
+	session := scriptSessionManager.sessions[sessionID]
+	scriptSessionManager.mutex.RUnlock()
+
+	if session == nil {
+		log.Printf("❌ Session %s not found", sessionID)
+		return c.String(http.StatusNotFound, "Session not found")
+	}
+
+	if session.Status == "failed" || session.Status == "completed" {
+		log.Printf("⚠️ Session %s is %s, cannot stream", sessionID, session.Status)
+		return c.String(http.StatusBadRequest, fmt.Sprintf("Session is %s", session.Status))
+	}
+
+	// Check if CDP endpoint is available (from Python script)
+	if session.CDPEndpoint == "" {
+		log.Printf("⚠️ CDP endpoint not available for session %s - task may still be starting", sessionID)
+		return c.String(http.StatusServiceUnavailable, "CDP endpoint not available - task may still be starting")
+	}
+
+	log.Printf("� Using CDP endpoint: %s", session.CDPEndpoint)
+
+	// Set MJPEG headers (EXACT same as old code)
+	c.Response().Header().Set("Content-Type", "multipart/x-mixed-replace; boundary=frame")
+	c.Response().Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+	c.Response().Header().Set("Pragma", "no-cache")
+	c.Response().Header().Set("Expires", "0")
+	c.Response().Header().Set("Connection", "keep-alive")
+	c.Response().Header().Set("Access-Control-Allow-Origin", "*")
+
+	w := c.Response().Writer
+	
+	// Echo's response writer should support streaming - let's try to initialize flusher
+	c.Response().WriteHeader(http.StatusOK)
+	
+	// Try to get flusher interface - this is more forgiving than hard error
+	var flusher http.Flusher
+	if f, ok := w.(http.Flusher); ok {
+		flusher = f
+		log.Printf("✅ Streaming supported, flusher interface available")
+	} else {
+		log.Printf("⚠️ No flusher interface, will try streaming anyway")
+	}
+
+	// Create CDP client (use service's CDP client)
+	serviceImpl := h.service.(*serviceImpl)
+	cdpClient := serviceImpl.newCDPClient(session.CDPEndpoint)
+	if err := cdpClient.Connect(); err != nil {
+		log.Printf("❌ Failed to connect to CDP: %v", err)
+		return c.String(http.StatusInternalServerError, "Failed to connect to browser")
+	}
+	defer cdpClient.Close()
+
+	// Streaming loop with improved error handling
+	ticker := time.NewTicker(200 * time.Millisecond) // 5 FPS like old code
+	defer ticker.Stop()
+
+	frameCount := 0
+	maxFrames := 3000 // 10 minutes at 5 FPS
+	connectionErrors := 0
+	maxErrors := 10
+
+	// Write initial boundary with error handling
+	if _, err := w.Write([]byte("--frame\r\n")); err != nil {
+		log.Printf("❌ Failed to write initial boundary: %v", err)
+		return nil // Return nil instead of error to prevent crash
+	}
+
+	log.Printf("📹 MJPEG streaming started for session %s", sessionID)
+
+	ctx := c.Request().Context()
+
+	// Add panic recovery to prevent server crashes
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("❌ Streaming panic recovered for session %s: %v", sessionID, r)
+		}
+	}()
+
+	for {
+		select {
+		case <-ctx.Done():
+			log.Printf("📸 Client disconnected from stream %s after %d frames", sessionID, frameCount)
+			return nil
+
+		case <-ticker.C:
+			// Check if task is still running with safe session access
+			scriptSessionManager.mutex.RLock()
+			currentSession := scriptSessionManager.sessions[sessionID]
+			var currentStatus string
+			if currentSession != nil {
+				currentStatus = currentSession.Status
+			} else {
+				currentStatus = "not_found"
+			}
+			scriptSessionManager.mutex.RUnlock()
+
+			if currentStatus == "completed" || currentStatus == "failed" || currentStatus == "not_found" {
+				log.Printf("📸 Task %s, stopping stream", currentStatus)
+				return nil
+			}
+
+			// Capture screenshot with error recovery
+			imageData, err := cdpClient.CaptureScreenshot()
+			if err != nil {
+				connectionErrors++
+				log.Printf("⚠️ Screenshot failed (error %d/%d): %v", connectionErrors, maxErrors, err)
+				
+				if connectionErrors >= maxErrors {
+					log.Printf("❌ Too many errors, stopping stream")
+					return c.String(http.StatusInternalServerError, "Too many screenshot errors")
+				}
+				continue
+			}
+
+			// Reset error count on success
+			connectionErrors = 0
+
+			// Validate image data
+			if len(imageData) < 1000 {
+				log.Printf("⚠️ Screenshot too small (%d bytes), skipping", len(imageData))
+				continue
+			}
+
+			frameCount++
+
+			// Write MJPEG frame (EXACT same format as old code)
+			if _, err := w.Write([]byte("Content-Type: image/png\r\n")); err != nil {
+				log.Printf("❌ Client disconnected during frame write")
+				return nil
+			}
+
+			if _, err := w.Write([]byte(fmt.Sprintf("Content-Length: %d\r\n\r\n", len(imageData)))); err != nil {
+				log.Printf("❌ Client disconnected during header write")
+				return nil
+			}
+
+			if _, err := w.Write(imageData); err != nil {
+				log.Printf("❌ Client disconnected during image write")
+				return nil
+			}
+
+			if _, err := w.Write([]byte("\r\n--frame\r\n")); err != nil {
+				log.Printf("❌ Client disconnected during boundary write")
+				return nil
+			}
+
+			// Flush the response
+			if flusher != nil {
+				flusher.Flush()
+			}
+
+			// Log progress every 25 frames (like old code)
+			if frameCount%25 == 0 {
+				log.Printf("📹 Streamed %d frames for session %s", frameCount, sessionID)
+			}
+
+			// Stop after max frames (safety limit from old code)
+			if frameCount >= maxFrames {
+				log.Printf("📸 Reached max frames limit, stopping stream")
+				return nil
+			}
+		}
+	}
+}// ExecuteTaskAndStream creates browser first, then task and returns response immediately (FIXED)
+func (h *handler) ExecuteTaskAndStream(c echo.Context) error {
+	// Parse request body
+	var req struct {
+		Task     string `json:"task" validate:"required"`
+		MaxSteps int    `json:"maxSteps"`
+	}
+	
+	if err := c.Bind(&req); err != nil {
+		return helpers.RespFailure(c, "Invalid request body", err)
+	}
+	
+	if req.MaxSteps == 0 {
+		req.MaxSteps = 10 // Default max steps
+	}
+	
+	log.Printf("ExecuteTaskAndStream: %s (max steps: %d)", req.Task, req.MaxSteps)
+	
+	// STEP 1: Create browser session FIRST (like old code)
+	log.Printf("Creating browser session first (old code architecture)")
+	
+	browserSession, err := h.service.CreateBrowserSession(CreateBrowserSessionDto{
+		Viewport: ViewportDto{
+			Width:  1920,
+			Height: 1080,
+		},
+	})
+	if err != nil {
+		return helpers.RespFailure(c, "Failed to create browser session", err)
+	}
+	
+	// Use the returned ID from browser session
+	sessionID := browserSession.ID
+	log.Printf("Created browser session %s with CDP: %s", sessionID, browserSession.CDPEndpoint)
+	
+	// STEP 2: Create task with existing browser (pass CDP endpoint TO Python)
+	log.Printf("🎯 Creating task with existing browser CDP endpoint")
+	taskResponse, err := h.service.CreateScriptTaskWithBrowser(ScriptTaskWithBrowserDto{
+		Task:        req.Task,
+		MaxSteps:    req.MaxSteps,
+		BrowserID:   browserSession.ID,
+		CDPEndpoint: browserSession.CDPEndpoint,
+	})
+	if err != nil {
+		return helpers.RespFailure(c, "Failed to create script task", err)
+	}
+	
+	log.Printf("✅ Created task session %s for streaming", sessionID)
+	
+	// STEP 3: Return enhanced response immediately (matches old code exactly)
+	// This prevents HTTP timeout issues and matches the old code pattern
+	
+	// Create response with all URLs like the old code
+	baseURL := fmt.Sprintf("http://%s", c.Request().Host)
+	response := map[string]interface{}{
+		"success": true,
+		"message": "Task started and streaming available",
+		"data": map[string]interface{}{
+			"success":       true,
+			"id":           taskResponse.SessionId,
+			"sessionId":    taskResponse.SessionId,
+			"status":       "started",
+			"task":         req.Task,
+			"createdAt":    time.Now(),
+			"live_url":     fmt.Sprintf("%s/api/v1/browser_use/browser/live-automation/%s", baseURL, taskResponse.SessionId),
+			"streaming_url": fmt.Sprintf("%s/api/v1/browser_use/browser/stream-screencast/%s", baseURL, taskResponse.SessionId),
+			"websocket_url": fmt.Sprintf("ws://%s/api/v1/browser_use/browser/ws/%s", baseURL, taskResponse.SessionId),
+			"browser_info": map[string]interface{}{
+				"browserId":   browserSession.ID,
+				"cdpEndpoint": browserSession.CDPEndpoint,
+				"viewport": map[string]interface{}{
+					"width":  1920,
+					"height": 1080,
+				},
+			},
+			"message": "Task started successfully! Use streaming_url for MJPEG stream or automation_url for live page",
+		},
+	}
+	
+	log.Printf("✅ Returning enhanced response for session %s", sessionID)
+	
+	return c.JSON(http.StatusOK, response)
+}

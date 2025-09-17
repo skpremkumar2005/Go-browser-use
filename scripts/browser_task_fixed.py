@@ -133,17 +133,20 @@ class UnifiedBrowserUseAgent:
                 logger.info(f"🔗 Connecting to existing browser session with enhanced stealth: {cdp_endpoint}")
                 
                 try:
+                    # For existing browsers, create a browser session that connects to the CDP endpoint
                     browser_session = BrowserSession(
                         cdp_url=cdp_endpoint,
                         is_local=False,
                         browser_profile=browser_profile
                     )
                     
-                    logger.info(f"✅ Created ultra-stealth browser session for existing browser")
+                    logger.info(f"✅ Connected to existing browser session for streaming integration")
                     
                 except Exception as e:
-                    logger.error(f"❌ Failed to create stealth browser session: {e}")
-                    raise
+                    logger.error(f"❌ Failed to connect to existing browser session: {e}")
+                    logger.info(f"🆕 Falling back to creating new browser instance")
+                    # Fallback to creating new browser
+                    browser_session = BrowserSession(browser_profile=browser_profile)
             else:
                 # Create new browser session with enhanced stealth
                 logger.info(f"🆕 Creating new ultra-stealth browser instance")
@@ -182,19 +185,152 @@ class UnifiedBrowserUseAgent:
             
             # Execute the task
             logger.info(f"🎯 Starting task execution: {task}")
-            # Check if agent.run() is async or sync
-            if asyncio.iscoroutinefunction(self.agent.run):
-                result = await self.agent.run()
-            else:
-                result = self.agent.run()
+            # Always await the agent's run method since it's async
+            result = await self.agent.run()
             
             logger.info("✅ Task completed successfully")
             
+            # Get CDP endpoint from the browser session that was created
+            actual_cdp_endpoint = cdp_endpoint
+            if self.agent and hasattr(self.agent, 'browser_session') and self.agent.browser_session:
+                # Try to extract CDP URL from browser session - browser_use creates its own browser
+                browser_session = self.agent.browser_session
+
+                # Check various possible attributes for CDP URL
+                if hasattr(browser_session, 'cdp_url') and browser_session.cdp_url:
+                    actual_cdp_endpoint = browser_session.cdp_url
+                elif hasattr(browser_session, '_cdp_url') and browser_session._cdp_url:
+                    actual_cdp_endpoint = browser_session._cdp_url
+                elif hasattr(browser_session, 'connection_url') and browser_session.connection_url:
+                    actual_cdp_endpoint = browser_session.connection_url
+                elif hasattr(browser_session, '_connection_url') and browser_session._connection_url:
+                    actual_cdp_endpoint = browser_session._connection_url
+                elif hasattr(browser_session, 'browser_context') and browser_session.browser_context:
+                    # Try to get CDP endpoint from browser context
+                    ctx = browser_session.browser_context
+                    if hasattr(ctx, 'cdp_session') and hasattr(ctx.cdp_session, '_ws_url'):
+                        actual_cdp_endpoint = ctx.cdp_session._ws_url
+
+                # Also try to get the debugger URL from browser process
+                if not actual_cdp_endpoint and hasattr(browser_session, '_browser_process'):
+                    process = browser_session._browser_process
+                    if hasattr(process, 'debugger_url'):
+                        actual_cdp_endpoint = process.debugger_url
+
+                # Try to construct CDP endpoint from localhost port if we can find it
+                if not actual_cdp_endpoint:
+                    # Look for CDP port in logs or try common port range
+                    import re
+                    # Check if we can extract port from any internal URLs
+                    for attr_name in dir(browser_session):
+                        if not attr_name.startswith('_'):
+                            continue
+                        attr_val = getattr(browser_session, attr_name, None)
+                        if isinstance(attr_val, str) and 'localhost:' in attr_val and '/devtools/' in attr_val:
+                            actual_cdp_endpoint = attr_val
+                            break
+
+                # NEW: Try to get CDP endpoint from browser profile or internal state
+                if not actual_cdp_endpoint:
+                    # Check browser profile for CDP information
+                    if hasattr(browser_session, 'browser_profile') and browser_session.browser_profile:
+                        profile = browser_session.browser_profile
+                        if hasattr(profile, 'cdp_url') and profile.cdp_url:
+                            actual_cdp_endpoint = profile.cdp_url
+                        elif hasattr(profile, '_cdp_url') and profile._cdp_url:
+                            actual_cdp_endpoint = profile._cdp_url
+
+                # NEW: Try to access the underlying browser connection
+                if not actual_cdp_endpoint:
+                    try:
+                        # Try to get the browser context and check for connection details
+                        if hasattr(browser_session, 'browser_context') and browser_session.browser_context:
+                            ctx = browser_session.browser_context
+                            # Check if there's a connection or session with URL info
+                            if hasattr(ctx, 'connection') and ctx.connection:
+                                conn = ctx.connection
+                                if hasattr(conn, 'url') and conn.url:
+                                    actual_cdp_endpoint = conn.url
+                                elif hasattr(conn, '_url') and conn._url:
+                                    actual_cdp_endpoint = conn._url
+                    except Exception as e:
+                        logger.debug(f"Could not access browser connection: {e}")
+
+                # NEW: Try to find the port from browser process arguments
+                if not actual_cdp_endpoint:
+                    try:
+                        # Check if we can find the remote debugging port from the browser process
+                        import psutil
+                        import os
+
+                        # Get current process and look for chrome processes
+                        current_pid = os.getpid()
+                        parent = psutil.Process(current_pid)
+
+                        # Look for chrome processes in the process tree
+                        for proc in parent.children(recursive=True):
+                            try:
+                                if 'chrome' in proc.name().lower() or 'chromium' in proc.name().lower():
+                                    # Get command line arguments
+                                    cmdline = proc.cmdline()
+                                    for arg in cmdline:
+                                        if '--remote-debugging-port=' in arg:
+                                            port = arg.split('=')[1]
+                                            actual_cdp_endpoint = f"ws://localhost:{port}/devtools/browser"
+                                            logger.info(f"🔍 Found Chrome debugging port: {port}")
+                                            break
+                                    if actual_cdp_endpoint:
+                                        break
+                            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                                continue
+                    except ImportError:
+                        logger.debug("psutil not available for process inspection")
+                    except Exception as e:
+                        logger.debug(f"Could not inspect browser processes: {e}")
+
+                # NEW: Try to extract CDP endpoint from browser-use logs or network requests
+                if not actual_cdp_endpoint:
+                    try:
+                        # Try to get the CDP endpoint by making a request to the browser's JSON endpoint
+                        # This is what browser-use does internally
+                        import httpx
+                        import json
+
+                        # Try common ports that browser-use might use
+                        common_ports = [59035, 58926, 9222, 9223, 9224, 9225]
+                        for port in common_ports:
+                            try:
+                                response = httpx.get(f"http://localhost:{port}/json/version", timeout=1.0)
+                                if response.status_code == 200:
+                                    version_data = response.json()
+                                    if 'webSocketDebuggerUrl' in version_data:
+                                        actual_cdp_endpoint = version_data['webSocketDebuggerUrl']
+                                        logger.info(f"🔗 Found CDP endpoint via HTTP: {actual_cdp_endpoint}")
+                                        break
+                            except (httpx.RequestError, json.JSONDecodeError):
+                                continue
+                    except ImportError:
+                        logger.debug("httpx not available for HTTP requests")
+                    except Exception as e:
+                        logger.debug(f"Could not get CDP endpoint via HTTP: {e}")
+
+                # Log the CDP endpoint for Go to capture
+                if actual_cdp_endpoint:
+                    logger.info(f"🔗 Browser CDP endpoint found: {actual_cdp_endpoint}")
+                else:
+                    logger.warning("⚠️ Could not extract CDP endpoint from browser session")
+                    # Try to get it from environment or use a fallback
+                    # This is a last resort - browser-use should provide the endpoint
+                    logger.info("🔍 Browser session attributes available:")
+                    for attr in dir(browser_session):
+                        if not attr.startswith('__'):
+                            logger.info(f"  - {attr}: {type(getattr(browser_session, attr, None))}")
+
             # Return result in the same format as Node.js version
             return {
                 "success": True,
                 "result": str(result) if result else "Task completed",
-                "cdp_endpoint": cdp_endpoint,
+                "cdp_endpoint": actual_cdp_endpoint,
                 "executed_at": time.time()
             }
             

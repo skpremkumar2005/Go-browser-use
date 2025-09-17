@@ -1,0 +1,356 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Live Browser Stream</title>
+    <style>
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+
+      body {
+        background: #000;
+        color: #fff;
+        font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+        height: 100vh;
+        overflow: hidden;
+      }
+
+      .container {
+        position: relative;
+        width: 100%;
+        height: 100vh;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+      }
+
+      .browser-container {
+        position: relative;
+        max-width: 100%;
+        max-height: 100%;
+        border: 1px solid #333;
+        background: #111;
+      }
+
+      #browserCanvas {
+        max-width: 100%;
+        max-height: 100vh;
+        object-fit: contain;
+        display: block;
+      }
+
+      .loading-overlay {
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        background: rgba(0, 0, 0, 0.8);
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        z-index: 1000;
+      }
+
+      .loading-content {
+        text-align: center;
+        color: #fff;
+      }
+
+      .spinner {
+        width: 40px;
+        height: 40px;
+        border: 4px solid #333;
+        border-top: 4px solid #fff;
+        border-radius: 50%;
+        animation: spin 1s linear infinite;
+        margin: 0 auto 20px;
+      }
+
+      @keyframes spin {
+        0% {
+          transform: rotate(0deg);
+        }
+        100% {
+          transform: rotate(360deg);
+        }
+      }
+
+      .status {
+        position: absolute;
+        top: 10px;
+        right: 10px;
+        background: rgba(0, 0, 0, 0.7);
+        padding: 5px 10px;
+        border-radius: 4px;
+        font-size: 12px;
+        z-index: 100;
+      }
+
+      .status.connected {
+        color: #4caf50;
+      }
+
+      .status.connecting {
+        color: #ff9800;
+      }
+
+      .status.error {
+        color: #f44336;
+      }
+
+      .error-message {
+        position: absolute;
+        bottom: 20px;
+        left: 50%;
+        transform: translateX(-50%);
+        background: rgba(244, 67, 54, 0.9);
+        color: white;
+        padding: 10px 20px;
+        border-radius: 4px;
+        max-width: 80%;
+        text-align: center;
+        z-index: 1001;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <div class="browser-container">
+        <img id="browserCanvas" alt="Browser Stream" />
+        <div id="loadingOverlay" class="loading-overlay">
+          <div class="loading-content">
+            <div class="spinner"></div>
+            <div id="loadingText">Loading browser stream...</div>
+          </div>
+        </div>
+        <div id="status" class="status connecting">Connecting...</div>
+      </div>
+    </div>
+
+    <script>
+      // Get taskId from URL path
+      const taskId = window.location.pathname.split("/").pop();
+      console.log("🎥 Initializing live stream for task:", taskId);
+
+      // DOM elements
+      const browserCanvas = document.getElementById("browserCanvas");
+      const loadingOverlay = document.getElementById("loadingOverlay");
+      const loadingText = document.getElementById("loadingText");
+      const status = document.getElementById("status");
+
+      // Stream configuration
+      const streamingUrl = `/api/v1/browser_use/browser/stream-screencast/${taskId}`;
+      const websocketUrl = `ws://${window.location.host}/api/v1/browser_use/browser/ws/${taskId}`;
+
+      // State variables
+      let isStreaming = false;
+      let isRetrying = false;
+      let retryCount = 0;
+      let maxRetries = 5;
+      let streamTimeout = null;
+      let lastStreamUpdate = Date.now();
+      let websocket = null;
+
+      // Initialize streaming
+      function initializeStream() {
+        console.log("🚀 Starting streaming initialization...");
+        showStatus("Connecting...", "connecting");
+        startStreaming();
+        connectWebSocket();
+      }
+
+      // Start MJPEG streaming with optimized approach
+      function startStreaming() {
+        if (isStreaming || isRetrying) {
+          console.log("⚠️ Stream already active, skipping...");
+          return;
+        }
+
+        isRetrying = true;
+        console.log(
+          `🔄 Starting stream (attempt ${retryCount + 1}/${maxRetries + 1})...`
+        );
+
+        // Clear any existing timeout
+        if (streamTimeout) {
+          clearTimeout(streamTimeout);
+          streamTimeout = null;
+        }
+
+        // Use simple URL without frequent cache busting
+        const streamUrl = streamingUrl;
+        console.log("📡 Stream URL:", streamUrl);
+
+        // Setup event handlers
+        browserCanvas.onload = function () {
+          console.log("✅ Stream connected successfully");
+          isStreaming = true;
+          isRetrying = false;
+          retryCount = 0;
+          lastStreamUpdate = Date.now();
+
+          hideLoadingOverlay();
+          showStatus("Connected", "connected");
+          clearErrorMessage();
+        };
+
+        browserCanvas.onerror = function (event) {
+          console.warn("⚠️ Stream error:", event.type);
+          handleStreamError();
+        };
+
+        // Set stream source
+        browserCanvas.src = streamUrl;
+
+        // Timeout failsafe
+        streamTimeout = setTimeout(() => {
+          if (!isStreaming) {
+            console.warn("⏰ Stream timeout");
+            handleStreamError();
+          }
+        }, 10000);
+      }
+
+      // Handle stream errors with progressive backoff
+      function handleStreamError() {
+        if (isRetrying) return; // Already handling
+
+        isStreaming = false;
+        retryCount++;
+
+        if (retryCount > maxRetries) {
+          console.error("❌ Max retries exceeded");
+          showStatus("Connection Failed", "error");
+          showError("Connection failed. Please refresh the page.");
+          return;
+        }
+
+        const delay = Math.min(2000 * retryCount, 10000); // 2s, 4s, 6s, 8s, 10s max
+        console.log(
+          `🔄 Retrying in ${delay}ms... (${retryCount}/${maxRetries})`
+        );
+
+        showStatus(
+          `Reconnecting... (${retryCount}/${maxRetries})`,
+          "connecting"
+        );
+        showLoadingOverlay(`Reconnecting... (${retryCount}/${maxRetries})`);
+
+        setTimeout(() => {
+          isRetrying = false;
+          startStreaming();
+        }, delay);
+      }
+
+      // WebSocket connection for interaction
+      function connectWebSocket() {
+        try {
+          websocket = new WebSocket(websocketUrl);
+
+          websocket.onopen = function () {
+            console.log("🔗 WebSocket connected");
+            websocket.send(
+              JSON.stringify({
+                type: "subscribe",
+                taskId: taskId,
+              })
+            );
+          };
+
+          websocket.onmessage = function (event) {
+            const data = JSON.parse(event.data);
+            console.log("📨 WebSocket message:", data);
+          };
+
+          websocket.onclose = function () {
+            console.log("🔌 WebSocket disconnected");
+            // Optionally reconnect WebSocket
+            setTimeout(connectWebSocket, 5000);
+          };
+
+          websocket.onerror = function (error) {
+            console.warn("⚠️ WebSocket error:", error);
+          };
+        } catch (error) {
+          console.error("❌ Failed to connect WebSocket:", error);
+        }
+      }
+
+      // UI helper functions
+      function showLoadingOverlay(message = "Loading...") {
+        if (loadingText) loadingText.textContent = message;
+        if (loadingOverlay) loadingOverlay.style.display = "flex";
+      }
+
+      function hideLoadingOverlay() {
+        if (loadingOverlay) loadingOverlay.style.display = "none";
+      }
+
+      function showStatus(message, type = "connecting") {
+        if (status) {
+          status.textContent = message;
+          status.className = `status ${type}`;
+        }
+      }
+
+      function showError(message) {
+        clearErrorMessage();
+        const errorDiv = document.createElement("div");
+        errorDiv.className = "error-message";
+        errorDiv.textContent = message;
+        document.body.appendChild(errorDiv);
+
+        // Auto-hide after 5 seconds
+        setTimeout(() => {
+          if (errorDiv.parentNode) {
+            errorDiv.parentNode.removeChild(errorDiv);
+          }
+        }, 5000);
+      }
+
+      function clearErrorMessage() {
+        const existing = document.querySelector(".error-message");
+        if (existing) {
+          existing.remove();
+        }
+      }
+
+      // Handle window focus/blur to pause/resume streaming
+      document.addEventListener("visibilitychange", function () {
+        if (document.hidden) {
+          console.log("📱 Page hidden, keeping stream active");
+        } else {
+          console.log("📱 Page visible, ensuring stream is active");
+          if (!isStreaming && !isRetrying) {
+            console.log("🔄 Restarting stream after page focus");
+            startStreaming();
+          }
+        }
+      });
+
+      // Handle window resize
+      window.addEventListener("resize", function () {
+        console.log("📐 Window resized");
+      });
+
+      // Keyboard shortcuts
+      document.addEventListener("keydown", function (event) {
+        if (event.key === "r" && event.ctrlKey) {
+          event.preventDefault();
+          console.log("🔄 Manual refresh requested");
+          location.reload();
+        }
+      });
+
+      // Start the application
+      console.log("🚀 Initializing Live Browser Stream");
+      showLoadingOverlay("Connecting to browser stream...");
+      initializeStream();
+    </script>
+  </body>
+</html>

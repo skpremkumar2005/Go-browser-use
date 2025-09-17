@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -464,7 +465,7 @@ func (s *serviceImpl) executeScriptTaskWithLLM(taskID, task string, maxSteps int
 	log.Printf("🧠 Using LLM provider: %s, model: %s", llmConfig.Provider, llmConfig.LLMModel)
 
 	// Execute Python script with existing CDP endpoint and LLM configuration
-	scriptPath := `D:\Loacl disk D\projects\Go-browser-use\scripts\browser_task_fixed.py`
+	scriptPath := filepath.Join(s.config.Script.ScriptDir, s.config.Script.TaskScript)
 
 	log.Printf("🐍 Executing Python script: %s", scriptPath)
 
@@ -682,7 +683,7 @@ func (s *serviceImpl) executeScriptTask(sessionID, task string, maxSteps int) {
 
 	// Execute Python script - let it create its own browser and report CDP endpoint
 	// Use absolute path to avoid working directory issues
-	scriptPath := `D:\Loacl disk D\projects\Go-browser-use\scripts\browser_task_fixed.py`
+	scriptPath := filepath.Join(s.config.Script.ScriptDir, s.config.Script.TaskScript)
 
 	log.Printf("🐍 Executing Python script: %s", scriptPath)
 	log.Printf("🎯 Task: %s", task)
@@ -901,7 +902,7 @@ func (s *serviceImpl) executeScriptTaskWithBrowser(sessionID, task string, maxSt
 	log.Printf("🔗 Using existing browser CDP endpoint: %s", cdpEndpoint)
 
 	// Execute Python script with existing CDP endpoint (old code style)
-	scriptPath := `D:\Loacl disk D\projects\Go-browser-use\scripts\browser_task_fixed.py`
+	scriptPath := filepath.Join(s.config.Script.ScriptDir, s.config.Script.TaskScript)
 
 	log.Printf("🐍 Executing Python script: %s", scriptPath)
 	log.Printf("🎯 Task: %s", task)
@@ -1222,12 +1223,6 @@ func (s *serviceImpl) HandleWebSocket(conn *websocket.Conn, sessionID string) er
 
 	log.Printf("📹 WebSocket streaming started for session %s", sessionID)
 
-	// Enable Input domain for user interactions (like old working code)
-	_, err := cdpClient.SendCommand("Input.enable", map[string]interface{}{})
-	if err != nil {
-		log.Printf("⚠️ Failed to enable Input domain: %v", err)
-	}
-
 	// Create channels for coordinating frame streaming and message handling
 	frameChannel := make(chan []byte, 50)
 	messageChannel := make(chan []byte, 10)
@@ -1358,6 +1353,9 @@ func (s *serviceImpl) HandleWebSocket(conn *websocket.Conn, sessionID string) er
 				return nil
 			}
 
+			// Log the received message for debugging
+			log.Printf("📨 Received WebSocket message: %s", string(message))
+
 			// Process user interaction message (like old working code)
 			if err := s.handleUserInteraction(cdpClient, message, sessionID); err != nil {
 				log.Printf("⚠️ Failed to handle user interaction for session %s: %v", sessionID, err)
@@ -1377,39 +1375,187 @@ func (s *serviceImpl) HandleWebSocket(conn *websocket.Conn, sessionID string) er
 
 // handleUserInteraction processes user interaction messages from WebSocket (like old working code)
 func (s *serviceImpl) handleUserInteraction(cdpClient *CDPClient, message []byte, sessionID string) error {
+	log.Printf("🎮 Processing user interaction message: %s", string(message))
+	
 	var interaction struct {
-		Type string  `json:"type"`
-		X    float64 `json:"x"`
-		Y    float64 `json:"y"`
-		Text string  `json:"text"`
-		Key  string  `json:"key"`
-		DeltaX float64 `json:"deltaX"`
-		DeltaY float64 `json:"deltaY"`
+		Type   string                 `json:"type"`
+		TaskID string                 `json:"taskId"`
+		Action string                 `json:"action"`
+		Data   map[string]interface{} `json:"data"`
 	}
 
 	if err := json.Unmarshal(message, &interaction); err != nil {
+		log.Printf("❌ Failed to parse interaction message: %v", err)
 		return fmt.Errorf("failed to parse interaction message: %v", err)
 	}
 
-	log.Printf("🎮 Processing user interaction: %s for session %s", interaction.Type, sessionID)
+	log.Printf("🎮 Processing user interaction: %s for session %s", interaction.Action, sessionID)
 
-	// Handle different interaction types using CDP methods (like old working code)
-	switch interaction.Type {
-	case "click":
-		return cdpClient.Click(interaction.X, interaction.Y)
-		
-	case "type":
-		return cdpClient.TypeText(interaction.Text)
-		
-	case "key":
-		return cdpClient.PressKey(interaction.Key)
-		
-	case "scroll":
-		return cdpClient.Scroll(interaction.DeltaX, interaction.DeltaY)
-		
-	default:
-		return fmt.Errorf("unknown interaction type: %s", interaction.Type)
-	}
+       // Dispatch granular mouse/pointer events for live user interaction
+       switch interaction.Action {
+       case "mousedown", "pointerdown":
+	       x, _ := interaction.Data["x"].(float64)
+	       y, _ := interaction.Data["y"].(float64)
+	       button := "left"
+	       if b, ok := interaction.Data["button"].(string); ok {
+		       button = b
+	       }
+	       // Query scroll offset using CDP
+	       scrollResp, err := cdpClient.SendCommand("Runtime.evaluate", map[string]interface{}{
+		       "expression": "({x: window.scrollX, y: window.scrollY})",
+	       })
+	       var scrollX, scrollY float64
+	       if err == nil {
+		       if result, ok := scrollResp["result"].(map[string]interface{}); ok {
+			       if value, ok := result["value"].(map[string]interface{}); ok {
+				       if sx, ok := value["x"].(float64); ok {
+					       scrollX = sx
+				       }
+				       if sy, ok := value["y"].(float64); ok {
+					       scrollY = sy
+				       }
+			       }
+		       }
+	       }
+	       adjX := x + scrollX
+	       adjY := y + scrollY
+	       // Log DOM element at location
+	       elemResp, err := cdpClient.SendCommand("Runtime.evaluate", map[string]interface{}{
+		       "expression": "document.elementFromPoint(" + fmt.Sprintf("%d,%d", int(x), int(y)) + ")?.outerHTML",
+	       })
+	       if err == nil {
+		       if result, ok := elemResp["result"].(map[string]interface{}); ok {
+			       if value, ok := result["value"].(string); ok {
+				       log.Printf("🔍 Element at (%.0f, %.0f): %s", x, y, value)
+			       }
+		       }
+	       }
+	       _, err = cdpClient.SendCommand("Input.dispatchMouseEvent", map[string]interface{}{
+		       "type":       "mousePressed",
+		       "x":          adjX,
+		       "y":          adjY,
+		       "button":     button,
+		       "clickCount": 1,
+	       })
+	       if err != nil {
+		       return fmt.Errorf("failed to dispatch mousePressed: %v", err)
+	       }
+	       log.Printf("🖱️ mousePressed at (%.0f, %.0f) (adjusted: %.0f, %.0f)", x, y, adjX, adjY)
+	       return nil
+
+       case "mouseup", "pointerup":
+	       x, _ := interaction.Data["x"].(float64)
+	       y, _ := interaction.Data["y"].(float64)
+	       button := "left"
+	       if b, ok := interaction.Data["button"].(string); ok {
+		       button = b
+	       }
+	       // Query scroll offset using CDP
+	       scrollResp, err := cdpClient.SendCommand("Runtime.evaluate", map[string]interface{}{
+		       "expression": "({x: window.scrollX, y: window.scrollY})",
+	       })
+	       var scrollX, scrollY float64
+	       if err == nil {
+		       if result, ok := scrollResp["result"].(map[string]interface{}); ok {
+			       if value, ok := result["value"].(map[string]interface{}); ok {
+				       if sx, ok := value["x"].(float64); ok {
+					       scrollX = sx
+				       }
+				       if sy, ok := value["y"].(float64); ok {
+					       scrollY = sy
+				       }
+			       }
+		       }
+	       }
+	       adjX := x + scrollX
+	       adjY := y + scrollY
+	       // Log DOM element at location
+	       elemResp, err := cdpClient.SendCommand("Runtime.evaluate", map[string]interface{}{
+		       "expression": "document.elementFromPoint(" + fmt.Sprintf("%d,%d", int(x), int(y)) + ")?.outerHTML",
+	       })
+	       if err == nil {
+		       if result, ok := elemResp["result"].(map[string]interface{}); ok {
+			       if value, ok := result["value"].(string); ok {
+				       log.Printf("🔍 Element at (%.0f, %.0f): %s", x, y, value)
+			       }
+		       }
+	       }
+	       _, err = cdpClient.SendCommand("Input.dispatchMouseEvent", map[string]interface{}{
+		       "type":       "mouseReleased",
+		       "x":          adjX,
+		       "y":          adjY,
+		       "button":     button,
+		       "clickCount": 1,
+	       })
+	       if err != nil {
+		       return fmt.Errorf("failed to dispatch mouseReleased: %v", err)
+	       }
+	       log.Printf("🖱️ mouseReleased at (%.0f, %.0f) (adjusted: %.0f, %.0f)", x, y, adjX, adjY)
+	       return nil
+
+       case "mousemove":
+	       x, _ := interaction.Data["x"].(float64)
+	       y, _ := interaction.Data["y"].(float64)
+	       _, err := cdpClient.SendCommand("Input.dispatchMouseEvent", map[string]interface{}{
+		       "type":   "mouseMoved",
+		       "x":      x,
+		       "y":      y,
+		       "button": "none",
+	       })
+	       if err != nil {
+		       return fmt.Errorf("failed to dispatch mouseMoved: %v", err)
+	       }
+	       log.Printf("🖱️ mouseMoved to (%.0f, %.0f)", x, y)
+	       return nil
+
+       case "click":
+	       // For click, send mousePressed then mouseReleased
+	       x, _ := interaction.Data["x"].(float64)
+	       y, _ := interaction.Data["y"].(float64)
+	       button := "left"
+	       if b, ok := interaction.Data["button"].(string); ok {
+		       button = b
+	       }
+	       _, err := cdpClient.SendCommand("Input.dispatchMouseEvent", map[string]interface{}{
+		       "type":       "mousePressed",
+		       "x":          x,
+		       "y":          y,
+		       "button":     button,
+		       "clickCount": 1,
+	       })
+	       if err != nil {
+		       return fmt.Errorf("failed to dispatch mousePressed for click: %v", err)
+	       }
+	       time.Sleep(50 * time.Millisecond)
+	       _, err = cdpClient.SendCommand("Input.dispatchMouseEvent", map[string]interface{}{
+		       "type":       "mouseReleased",
+		       "x":          x,
+		       "y":          y,
+		       "button":     button,
+		       "clickCount": 1,
+	       })
+	       if err != nil {
+		       return fmt.Errorf("failed to dispatch mouseReleased for click: %v", err)
+	       }
+	       log.Printf("🖱️ Clicked at (%.0f, %.0f)", x, y)
+	       return nil
+
+       case "type":
+	       text, _ := interaction.Data["text"].(string)
+	       return cdpClient.TypeText(text)
+
+       case "key":
+	       key, _ := interaction.Data["key"].(string)
+	       return cdpClient.PressKey(key)
+
+       case "scroll":
+	       deltaX, _ := interaction.Data["deltaX"].(float64)
+	       deltaY, _ := interaction.Data["deltaY"].(float64)
+	       return cdpClient.Scroll(deltaX, deltaY)
+
+       default:
+	       return fmt.Errorf("unknown interaction action: %s", interaction.Action)
+       }
 }
 
 func (s *serviceImpl) StartStreamingSession(sessionID string) error {
@@ -1766,10 +1912,13 @@ func (s *serviceImpl) newCDPClient(wsURL string) *CDPClient {
 	}
 }
 
-// Connect establishes WebSocket connection to CDP
+// Connect establishes WebSocket connection to CDP with proper buffer management
 func (c *CDPClient) Connect() error {
-	dialer := websocket.DefaultDialer
-	dialer.HandshakeTimeout = 10 * time.Second
+	dialer := &websocket.Dialer{
+		HandshakeTimeout: 10 * time.Second,
+		ReadBufferSize:   32768, // 32KB buffer to handle large CDP messages
+		WriteBufferSize:  32768, // 32KB buffer to handle large CDP messages
+	}
 	
 	conn, _, err := dialer.Dial(c.wsURL, nil)
 	if err != nil {
@@ -1783,6 +1932,8 @@ func (c *CDPClient) Connect() error {
 		log.Printf("❌ Failed to enable Page domain: %v", err)
 		return fmt.Errorf("failed to enable Page domain: %w", err)
 	}
+	
+	// Note: Input domain does not need to be enabled - it's always available for dispatching events
 	
 	// Navigate to a basic page to ensure we have something to screenshot
 	if err := c.navigateToPage("about:blank"); err != nil {
@@ -1853,12 +2004,26 @@ func (c *CDPClient) sendRequest(method string, params map[string]interface{}) (m
 		return nil, fmt.Errorf("failed to send CDP request: %w", err)
 	}
 
-	// Wait for response with timeout
+	// Wait for response with timeout and error recovery
 	c.conn.SetReadDeadline(time.Now().Add(10 * time.Second))
 	
 	for {
 		var response map[string]interface{}
-		if err := c.conn.ReadJSON(&response); err != nil {
+		err := c.conn.ReadJSON(&response)
+		if err != nil {
+			// Check for buffer overflow or WebSocket issues
+			if strings.Contains(err.Error(), "slice bounds out of range") ||
+			   strings.Contains(err.Error(), "capacity") ||
+			   strings.Contains(err.Error(), "RSV") {
+				log.Printf("⚠️ CDP WebSocket buffer issue detected, attempting recovery: %v", err)
+				// Close and reconnect to recover from buffer issues
+				c.conn.Close()
+				if reconnErr := c.Connect(); reconnErr != nil {
+					return nil, fmt.Errorf("failed to recover CDP connection: %w", reconnErr)
+				}
+				// Retry the original request
+				return c.sendRequest(method, params)
+			}
 			return nil, fmt.Errorf("failed to read CDP response: %w", err)
 		}
 
@@ -1948,6 +2113,20 @@ func (c *CDPClient) enablePageDomain() error {
 	return nil
 }
 
+// bringToFront focuses the current page/tab so input events are applied
+func (c *CDPClient) bringToFront() error {
+	// Page.bringToFront brings the target to the foreground
+	_, err := c.SendCommand("Page.bringToFront", map[string]interface{}{})
+	if err != nil {
+		// Not all CDP implementations support bringToFront; log and continue
+		log.Printf("⚠️ Page.bringToFront failed or not supported: %v", err)
+		return err
+	}
+	// Small delay to allow the page to become active
+	time.Sleep(50 * time.Millisecond)
+	return nil
+}
+
 // navigateToPage navigates to a specific URL
 func (c *CDPClient) navigateToPage(url string) error {
 	_, err := c.SendCommand("Page.navigate", map[string]interface{}{
@@ -1993,14 +2172,15 @@ func (c *CDPClient) GetPageURL() (string, error) {
 
 // Click performs a mouse click at specified coordinates using CDP Input domain (like old working code)
 func (c *CDPClient) Click(x, y float64) error {
-	// Enable Input domain for proper mouse events
-	_, err := c.SendCommand("Input.enable", map[string]interface{}{})
-	if err != nil {
-		log.Printf("⚠️ Failed to enable Input domain: %v", err)
+	// Ensure page is active and in front so input events are accepted
+	if err := c.ensurePageActive(); err != nil {
+		log.Printf("⚠️ ensurePageActive failed before Click: %v", err)
 	}
+	// Attempt to bring page to foreground (best-effort)
+	_ = c.bringToFront()
 
 	// Send mousePressed event
-	_, err = c.SendCommand("Input.dispatchMouseEvent", map[string]interface{}{
+	_, err := c.SendCommand("Input.dispatchMouseEvent", map[string]interface{}{
 		"type":       "mousePressed",
 		"x":          x,
 		"y":          y,
@@ -2032,18 +2212,18 @@ func (c *CDPClient) Click(x, y float64) error {
 
 // TypeText types text using CDP Input domain (like old working code)
 func (c *CDPClient) TypeText(text string) error {
-	// Enable Input domain
-	_, err := c.SendCommand("Input.enable", map[string]interface{}{})
-	if err != nil {
-		log.Printf("⚠️ Failed to enable Input domain: %v", err)
+	// Ensure page is active and in front so key events are accepted
+	if err := c.ensurePageActive(); err != nil {
+		log.Printf("⚠️ ensurePageActive failed before TypeText: %v", err)
 	}
+	_ = c.bringToFront()
 
 	// Type each character individually for proper input handling
 	for _, char := range text {
 		charStr := string(char)
 		
 		// Send key down
-		_, err = c.SendCommand("Input.dispatchKeyEvent", map[string]interface{}{
+		_, err := c.SendCommand("Input.dispatchKeyEvent", map[string]interface{}{
 			"type": "char",
 			"text": charStr,
 		})
@@ -2061,12 +2241,6 @@ func (c *CDPClient) TypeText(text string) error {
 
 // PressKey presses a specific key using CDP Input domain (like old working code)
 func (c *CDPClient) PressKey(key string) error {
-	// Enable Input domain
-	_, err := c.SendCommand("Input.enable", map[string]interface{}{})
-	if err != nil {
-		log.Printf("⚠️ Failed to enable Input domain: %v", err)
-	}
-
 	// Map common keys to their CDP key codes
 	keyMap := map[string]string{
 		"Enter":     "Enter",
@@ -2086,8 +2260,14 @@ func (c *CDPClient) PressKey(key string) error {
 		cdpKey = mappedKey
 	}
 
+	// Ensure page is active and in front so key events are accepted
+	if err := c.ensurePageActive(); err != nil {
+		log.Printf("⚠️ ensurePageActive failed before PressKey: %v", err)
+	}
+	_ = c.bringToFront()
+
 	// Send key down
-	_, err = c.SendCommand("Input.dispatchKeyEvent", map[string]interface{}{
+	_, err := c.SendCommand("Input.dispatchKeyEvent", map[string]interface{}{
 		"type": "keyDown",
 		"key":  cdpKey,
 	})
@@ -2113,18 +2293,18 @@ func (c *CDPClient) PressKey(key string) error {
 
 // Scroll scrolls the page using CDP Input domain (like old working code)
 func (c *CDPClient) Scroll(deltaX, deltaY float64) error {
-	// Enable Input domain
-	_, err := c.SendCommand("Input.enable", map[string]interface{}{})
-	if err != nil {
-		log.Printf("⚠️ Failed to enable Input domain: %v", err)
+	// Ensure page is active and in front so wheel events are accepted
+	if err := c.ensurePageActive(); err != nil {
+		log.Printf("⚠️ ensurePageActive failed before Scroll: %v", err)
 	}
+	_ = c.bringToFront()
 
 	// Get viewport center for scroll position
 	viewportX := float64(960) // Center of 1920px width
 	viewportY := float64(540) // Center of 1080px height
 
 	// Send wheel event using CDP Input domain (like old working code)
-	_, err = c.SendCommand("Input.dispatchMouseEvent", map[string]interface{}{
+	_, err := c.SendCommand("Input.dispatchMouseEvent", map[string]interface{}{
 		"type":   "mouseWheel",
 		"x":      viewportX,
 		"y":      viewportY,

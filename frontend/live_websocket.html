@@ -167,9 +167,37 @@
     </div>
 
     <script>
-      // Get sessionId from URL path
-      const sessionId = window.location.pathname.split("/").pop();
+      // Get sessionId from URL path OR use fallback methods
+      let sessionId = window.location.pathname.split("/").pop();
+      
+      // Template-provided WebSocket URL (if available from Go template)
+      let websocketUrl = `ws://${window.location.host}/api/v1/browser_use/browser/websocket-stream/${sessionId}`;
+      
       console.log("🎥 Initializing WebSocket stream for session:", sessionId);
+      console.log("🔗 Full URL path:", window.location.pathname);
+      console.log("🔗 URL segments:", window.location.pathname.split("/"));
+      console.log("🔗 WebSocket URL:", websocketUrl);
+
+      // Function to get the current active session from the backend
+      async function getActiveSession() {
+        try {
+          const response = await fetch(`http://${window.location.host}/api/v1/browser_use/browser/active-session`);
+          if (response.ok) {
+            const data = await response.json();
+            if (data.success && data.data.sessionId) {
+              console.log("🎯 Found active session from backend:", data.data.sessionId);
+              return {
+                sessionId: data.data.sessionId,
+                websocketUrl: data.data.websocket_url,
+                liveUrl: data.data.live_url
+              };
+            }
+          }
+        } catch (error) {
+          console.warn("⚠️ Could not fetch active session:", error);
+        }
+        return null;
+      }
 
       // DOM elements
       const canvas = document.getElementById("browserCanvas");
@@ -184,7 +212,7 @@
       const frameSize = document.getElementById("frameSize");
 
       // WebSocket configuration
-      const websocketUrl = `ws://${window.location.host}/api/v1/browser_use/browser/websocket-stream/${sessionId}`;
+      // Use the WebSocket URL we constructed earlier
 
       // State variables
       let websocket = null;
@@ -201,6 +229,11 @@
       // Canvas state
       let canvasWidth = 1200;
       let canvasHeight = 800;
+
+      // User interaction state
+      let isPointerDown = false;
+      let pointerId = null;
+      let lastSentMove = 0;
 
       // Initialize canvas
       function initializeCanvas() {
@@ -220,8 +253,237 @@
         );
       }
 
-      // WebSocket connection management
-      function connectWebSocket() {
+      // Setup browser interactions (mouse, keyboard, scroll)
+      function setupBrowserInteractions() {
+        console.log("🎮 Setting up browser interactions");
+
+        // Mouse/pointer events
+        canvas.addEventListener("pointerdown", handlePointerDown);
+        canvas.addEventListener("pointermove", handlePointerMove);
+        canvas.addEventListener("pointerup", handlePointerUp);
+        canvas.addEventListener("pointercancel", handlePointerCancel);
+
+        // Scroll events
+        canvas.addEventListener("wheel", handleBrowserScroll, {
+          passive: false,
+        });
+
+        // Prevent context menu
+        canvas.addEventListener("contextmenu", (e) => {
+          e.preventDefault();
+        });
+
+        // Keyboard events
+        window.addEventListener("keydown", handleBrowserKeydown);
+
+        console.log("✅ Browser interactions initialized");
+      }
+
+      // Coordinate mapping from canvas to browser viewport
+      function mapClientToPageCoords(clientX, clientY) {
+        const rect = canvas.getBoundingClientRect();
+
+        // canvas uses object-fit: contain; compute the actual displayed image size
+        const img = canvas;
+        const naturalWidth = img.naturalWidth || rect.width;
+        const naturalHeight = img.naturalHeight || rect.height;
+
+        // Compute scale used by object-fit: contain
+        const scale = Math.min(
+          rect.width / naturalWidth,
+          rect.height / naturalHeight
+        );
+        const renderedWidth = naturalWidth * scale;
+        const renderedHeight = naturalHeight * scale;
+
+        // Compute offset within the element due to contain centering
+        const offsetX = rect.left + (rect.width - renderedWidth) / 2;
+        const offsetY = rect.top + (rect.height - renderedHeight) / 2;
+
+        // Compute coordinates relative to the remote page viewport
+        const x = (clientX - offsetX) / scale;
+        const y = (clientY - offsetY) / scale;
+
+        return { x: Math.max(0, Math.round(x)), y: Math.max(0, Math.round(y)) };
+      }
+
+      // Pointer event handlers
+      function handlePointerDown(e) {
+        e.preventDefault();
+        canvas.setPointerCapture(e.pointerId);
+        isPointerDown = true;
+        pointerId = e.pointerId;
+
+        const coords = mapClientToPageCoords(e.clientX, e.clientY);
+        executeAction("mousedown", {
+          x: coords.x,
+          y: coords.y,
+          button: e.button || 0,
+          timestamp: Date.now(),
+        });
+        console.log(
+          `🖱️ pointerdown -> page coords: (${coords.x}, ${coords.y})`
+        );
+      }
+
+      function handlePointerMove(e) {
+        // Only send moves when pointer is active (drag) or occasionally when hovering
+        if (!canvas.naturalWidth) return; // no frame yet
+        const now = performance.now();
+        // Throttle to ~60fps using requestAnimationFrame & time check
+        if (now - lastSentMove < 8) return;
+        lastSentMove = now;
+
+        const coords = mapClientToPageCoords(e.clientX, e.clientY);
+        if (isPointerDown) {
+          // Dragging
+          executeAction("mousemove", {
+            x: coords.x,
+            y: coords.y,
+            buttons: e.buttons || 1,
+            timestamp: Date.now(),
+          });
+        } else {
+          // Hover move - send less frequently
+          if (!e._lastHover || now - e._lastHover > 200) {
+            e._lastHover = now;
+            executeAction("mousemove", {
+              x: coords.x,
+              y: coords.y,
+              buttons: 0,
+              timestamp: Date.now(),
+            });
+          }
+        }
+      }
+
+      function handlePointerUp(e) {
+        try {
+          canvas.releasePointerCapture(e.pointerId);
+        } catch (err) {}
+        const coords = mapClientToPageCoords(e.clientX, e.clientY);
+        executeAction("mouseup", {
+          x: coords.x,
+          y: coords.y,
+          button: e.button || 0,
+          timestamp: Date.now(),
+        });
+        // Fire a click action for compatibility
+        executeAction("click", {
+          x: coords.x,
+          y: coords.y,
+          button: e.button || 0,
+          timestamp: Date.now(),
+        });
+        isPointerDown = false;
+        pointerId = null;
+        console.log(`🖱️ pointerup -> page coords: (${coords.x}, ${coords.y})`);
+      }
+
+      function handlePointerCancel(e) {
+        if (isPointerDown) {
+          try {
+            canvas.releasePointerCapture(e.pointerId);
+          } catch (err) {}
+          isPointerDown = false;
+          pointerId = null;
+        }
+      }
+
+      // Scroll handler
+      function handleBrowserScroll(event) {
+        event.preventDefault();
+        const deltaY = event.deltaY;
+        const deltaX = event.deltaX;
+
+        executeAction("scroll", {
+          deltaX: Math.round(deltaX / 3),
+          deltaY: Math.round(deltaY / 3),
+          direction:
+            deltaY > 0
+              ? "down"
+              : deltaY < 0
+              ? "up"
+              : deltaX > 0
+              ? "right"
+              : "left",
+          timestamp: Date.now(),
+        });
+      }
+
+      // Keyboard handler
+      function handleBrowserKeydown(event) {
+        const activeElement = document.activeElement;
+        const isTextInput =
+          activeElement &&
+          (activeElement.tagName === "INPUT" ||
+            activeElement.tagName === "TEXTAREA" ||
+            activeElement.contentEditable === "true");
+
+        // Special keys that should always be handled
+        const specialKeys = [
+          "Escape",
+          "Tab",
+          "Enter",
+          "Backspace",
+          "Delete",
+          "ArrowUp",
+          "ArrowDown",
+          "ArrowLeft",
+          "ArrowRight",
+          "Home",
+          "End",
+          "PageUp",
+          "PageDown",
+        ];
+
+        if (
+          specialKeys.includes(event.key) ||
+          event.ctrlKey ||
+          event.altKey ||
+          event.metaKey
+        ) {
+          if (!isTextInput) {
+            event.preventDefault();
+          }
+
+          executeAction("key", {
+            key: event.key,
+            ctrlKey: event.ctrlKey,
+            altKey: event.altKey,
+            shiftKey: event.shiftKey,
+            metaKey: event.metaKey,
+            timestamp: Date.now(),
+          });
+        } else if (!isTextInput) {
+          // Regular typing
+          event.preventDefault();
+
+          executeAction("type", {
+            text: event.key,
+            timestamp: Date.now(),
+          });
+        }
+      }
+
+      // Execute action via WebSocket
+      function executeAction(action, data) {
+        if (websocket && websocket.readyState === WebSocket.OPEN) {
+          const message = {
+            type: "action",
+            taskId: sessionId,
+            action: action,
+            data: data,
+          };
+          websocket.send(JSON.stringify(message));
+          console.log(`🎯 Executed ${action}:`, data);
+        } else {
+          console.warn("⚠️ WebSocket not connected, action not sent");
+        }
+      }
+
+      // WebSocket connection management with automatic session recovery
+      async function connectWebSocket() {
         if (websocket && websocket.readyState === WebSocket.CONNECTING) {
           console.log("⚠️ WebSocket connection already in progress");
           return;
@@ -282,7 +544,13 @@
               `🔌 WebSocket closed (code: ${event.code}, reason: ${event.reason})`
             );
             isConnected = false;
-            handleDisconnection();
+            
+            // If we get a 404 or session not found error, try to get active session
+            if (event.code === 1006 || event.reason.includes("not found")) {
+              handleSessionNotFound();
+            } else {
+              handleDisconnection();
+            }
           };
 
           websocket.onerror = function (error) {
@@ -292,6 +560,36 @@
           };
         } catch (error) {
           console.error("❌ Failed to create WebSocket:", error);
+          handleDisconnection();
+        }
+      }
+
+      // Handle session not found by trying to get active session
+      async function handleSessionNotFound() {
+        console.log("🔄 Session not found, trying to get active session...");
+        
+        const activeSessionData = await getActiveSession();
+        if (activeSessionData && activeSessionData.sessionId !== sessionId) {
+          console.log(`🎯 Switching from ${sessionId} to active session ${activeSessionData.sessionId}`);
+          
+          // Update session ID and WebSocket URL
+          sessionId = activeSessionData.sessionId;
+          websocketUrl = activeSessionData.websocketUrl;
+          
+          // Update URL in browser without reload
+          if (history.pushState) {
+            const newUrl = activeSessionData.liveUrl.replace(`http://${window.location.host}`, '');
+            history.pushState({}, '', newUrl);
+          }
+          
+          // Reset reconnect count and try again
+          reconnectCount = 0;
+          
+          setTimeout(() => {
+            connectWebSocket();
+          }, 1000);
+        } else {
+          // No active session found, handle as normal disconnection
           handleDisconnection();
         }
       }
@@ -311,6 +609,14 @@
           case "stream_ended":
             console.log("📺 Stream ended:", data.reason);
             showError(`Stream ended: ${data.reason}`);
+            break;
+          case "action_ack":
+            console.log("✅ Action acknowledged:", data.action);
+            // Optional: Show brief visual feedback for successful actions
+            break;
+          case "action_error":
+            console.error("❌ Action failed:", data.message);
+            showError(`Action failed: ${data.message}`);
             break;
         }
       }
@@ -519,11 +825,47 @@
       // Initialize the application
       console.log("🚀 Initializing WebSocket Live Browser Stream");
       initializeCanvas();
+      setupBrowserInteractions(); // Add user interaction setup
       showLoadingOverlay("Connecting to WebSocket stream...");
 
-      // Start connection after a brief delay to ensure DOM is ready
-      setTimeout(() => {
+      // Start connection with session validation
+      async function initializeConnection() {
+        // First, try to validate current session or get active session
+        console.log("🔍 Validating session ID before connecting...");
+        
+        try {
+          // Test if current session exists by making a simple request
+          const testResponse = await fetch(`http://${window.location.host}/api/v1/browser_use/browser/sessions/${sessionId}`);
+          
+          if (!testResponse.ok) {
+            console.log("⚠️ Current session not found, getting active session...");
+            const activeSessionData = await getActiveSession();
+            
+            if (activeSessionData && activeSessionData.sessionId !== sessionId) {
+              console.log(`🎯 Switching to active session: ${activeSessionData.sessionId}`);
+              sessionId = activeSessionData.sessionId;
+              websocketUrl = activeSessionData.websocketUrl;
+              
+              // Update URL in browser without reload
+              if (history.replaceState) {
+                const newUrl = activeSessionData.liveUrl.replace(`http://${window.location.host}`, '');
+                history.replaceState({}, '', newUrl);
+              }
+            }
+          } else {
+            console.log("✅ Session validation successful");
+          }
+        } catch (error) {
+          console.warn("⚠️ Session validation failed, proceeding with original session:", error);
+        }
+        
+        // Now connect with the validated/corrected session ID
         connectWebSocket();
+      }
+
+      // Start the initialization process
+      setTimeout(() => {
+        initializeConnection();
       }, 100);
     </script>
   </body>

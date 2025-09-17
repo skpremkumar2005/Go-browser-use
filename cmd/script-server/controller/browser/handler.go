@@ -1,6 +1,7 @@
 package browser
 
 import (
+	"encoding/json"
 	"fmt"
 	"html/template"
 	"log"
@@ -50,6 +51,12 @@ type Handler interface {
 
 	// Live Page Handlers
 	LiveAutomationPage(c echo.Context) error
+
+	// Recovery endpoint
+	RecoverSession(c echo.Context) error
+	
+	// Get current active session endpoint
+	GetActiveSession(c echo.Context) error
 }
 
 // handlerFixed implements the Handler interface with fixed streaming
@@ -267,6 +274,8 @@ func (h *handler) HandleWebSocket(c echo.Context) error {
 	}
 	defer cdpClient.Close()
 
+	log.Printf("✅ CDP connection established for user interactions")
+
 	// Send connection success message
 	ws.WriteJSON(map[string]interface{}{
 		"type": "connected",
@@ -412,13 +421,68 @@ func (h *handler) HandleWebSocket(c echo.Context) error {
 				return nil
 			}
 
+			// Debug: Log ALL incoming messages
+			log.Printf("🔍 WebSocket received message type: %d, length: %d", messageType, len(message))
+
+			// Debug: Log ALL incoming messages
+			log.Printf("🔍 WebSocket received message type: %d, length: %d", messageType, len(message))
+
 			// Handle different message types
 			switch messageType {
 			case websocket.TextMessage:
 				// Handle text messages (commands, etc.)
 				log.Printf("📨 WebSocket text message: %s", string(message))
 				
-				// Echo response for now
+				// Try to parse as JSON to see if it's an action message
+				var msgData map[string]interface{}
+				if err := json.Unmarshal(message, &msgData); err == nil {
+					log.Printf("🔍 Parsed message data: %+v", msgData)
+					if msgType, ok := msgData["type"].(string); ok {
+						log.Printf("🔍 Message type: %s", msgType)
+						if msgType == "action" {
+							if action, actionOk := msgData["action"].(string); actionOk {
+								log.Printf("🎮 Action detected: %s", action)
+								// This is an action message from the frontend
+								log.Printf("🎮 Received user interaction from frontend: action=%s, session=%s", msgData["action"], sessionID)
+								
+								if err := h.handleUserInteraction(cdpClient, message, sessionID); err != nil {
+									log.Printf("⚠️ Failed to handle user interaction: %v", err)
+									// Send error response back to frontend
+									errorResponse := map[string]interface{}{
+										"type":    "action_error",
+										"message": err.Error(),
+										"timestamp": time.Now().Unix(),
+									}
+									ws.SetWriteDeadline(time.Now().Add(1 * time.Second))
+									if err := ws.WriteJSON(errorResponse); err != nil {
+										log.Printf("❌ WebSocket write error: %v", err)
+										return nil
+									}
+								} else {
+									log.Printf("✅ Successfully processed user interaction: %s", msgData["action"])
+									// Send success acknowledgment
+									ackResponse := map[string]interface{}{
+										"type":      "action_ack",
+										"action":    msgData["action"],
+										"timestamp": time.Now().Unix(),
+									}
+									ws.SetWriteDeadline(time.Now().Add(1 * time.Second))
+									if err := ws.WriteJSON(ackResponse); err != nil {
+										log.Printf("❌ WebSocket write error: %v", err)
+										return nil
+									}
+								}
+								continue // Don't send the generic echo response
+							}
+						} else if msgType == "handshake" {
+							log.Printf("🤝 WebSocket handshake received for session %s", sessionID)
+						}
+					}
+				} else {
+					log.Printf("❌ Failed to parse message as JSON: %v", err)
+				}
+				
+				// For non-action messages, send generic echo response
 				response := map[string]interface{}{
 					"type": "response",
 					"message": "Message received",
@@ -715,6 +779,37 @@ func (h *handler) LiveAutomationPage(c echo.Context) error {
 		return c.String(http.StatusBadRequest, "Session ID is required")
 	}
 	
+	log.Printf("🖥️ LiveAutomationPage requested for session: %s", sessionID)
+	log.Printf("🔗 Request URL: %s", c.Request().URL.String())
+	
+	// Check if this session actually exists
+	browserSession, err := h.service.GetBrowserSession(sessionID)
+	if err != nil {
+		log.Printf("⚠️ Session %s not found, might be expired or invalid", sessionID)
+		
+		// Try to find any active session as a fallback
+		activeSessions, listErr := h.service.ListBrowserSessions()
+		if listErr == nil && len(activeSessions) > 0 {
+			// Use the most recent active session
+			latestSession := activeSessions[0]
+			for _, session := range activeSessions {
+				if session.Status == "ready" && session.CreatedAt.After(latestSession.CreatedAt) {
+					latestSession = session
+				}
+			}
+			log.Printf("🔄 Redirecting to latest active session: %s", latestSession.ID)
+			return c.Redirect(http.StatusFound, fmt.Sprintf("/api/v1/browser_use/browser/live-automation/%s", latestSession.ID))
+		}
+		
+		return c.JSON(http.StatusNotFound, map[string]interface{}{
+			"error": "Session not found",
+			"message": "The requested session does not exist or has expired. Please create a new session.",
+			"sessionId": sessionID,
+		})
+	}
+	
+	log.Printf("✅ Found valid browser session %s with CDP: %s", sessionID, browserSession.CDPEndpoint)
+	
 	// Template data matching the old code structure
 	// Get base URL for WebSocket connection
 	baseURL := c.Request().Host
@@ -736,6 +831,8 @@ func (h *handler) LiveAutomationPage(c echo.Context) error {
 		IsAutomation: true,
 		WebSocketURL: fmt.Sprintf("ws://%s/api/v1/browser_use/browser/websocket-stream/%s", baseURL, sessionID),
 	}
+	
+	log.Printf("🔗 Generated WebSocket URL: %s", data.WebSocketURL)
 	
 	// Find and parse the live_websocket.html template  
 	templatePaths := []string{
@@ -918,4 +1015,159 @@ func (h *handler) RecoverSession(c echo.Context) error {
 	}
 	
 	return c.JSON(http.StatusOK, response)
+}
+
+// GetActiveSession gets the most recent active session
+func (h *handler) GetActiveSession(c echo.Context) error {
+	sessions, err := h.service.ListBrowserSessions()
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+	}
+	
+	if len(sessions) == 0 {
+		return c.JSON(http.StatusNotFound, map[string]interface{}{
+			"error": "No active sessions found",
+			"message": "Please create a new browser session first",
+		})
+	}
+	
+	// Find the most recent ready session
+	var activeSession *BrowserSessionResponseDto
+	for i := range sessions {
+		session := &sessions[i]
+		if session.Status == "ready" {
+			if activeSession == nil || session.CreatedAt.After(activeSession.CreatedAt) {
+				activeSession = session
+			}
+		}
+	}
+	
+	if activeSession == nil {
+		// If no ready session, use the most recent one
+		activeSession = &sessions[0]
+		for i := range sessions {
+			if sessions[i].CreatedAt.After(activeSession.CreatedAt) {
+				activeSession = &sessions[i]
+			}
+		}
+	}
+	
+	log.Printf("🎯 Active session found: %s (status: %s)", activeSession.ID, activeSession.Status)
+	
+	baseURL := fmt.Sprintf("http://%s", c.Request().Host)
+	
+	response := map[string]interface{}{
+		"success": true,
+		"data": map[string]interface{}{
+			"sessionId":     activeSession.ID,
+			"status":        activeSession.Status,
+			"cdpEndpoint":   activeSession.CDPEndpoint,
+			"createdAt":     activeSession.CreatedAt,
+			"live_url":      fmt.Sprintf("%s/api/v1/browser_use/browser/live-automation/%s", baseURL, activeSession.ID),
+			"websocket_url": fmt.Sprintf("ws://%s/api/v1/browser_use/browser/websocket-stream/%s", c.Request().Host, activeSession.ID),
+		},
+		"message": "Active session retrieved successfully",
+	}
+	
+	return c.JSON(http.StatusOK, response)
+}
+
+// handleUserInteraction processes user interaction messages from WebSocket
+func (h *handler) handleUserInteraction(cdpClient *CDPClient, message []byte, sessionID string) error {
+	// Check if CDP client is still available
+	if cdpClient == nil {
+		log.Printf("❌ CDP client is nil, cannot handle interaction")
+		return fmt.Errorf("CDP client is not available")
+	}
+
+	var interaction struct {
+		Type   string                 `json:"type"`
+		TaskID string                 `json:"taskId"`
+		Action string                 `json:"action"`
+		Data   map[string]interface{} `json:"data"`
+	}
+
+	if err := json.Unmarshal(message, &interaction); err != nil {
+		log.Printf("❌ Failed to parse user interaction message: %v", err)
+		return fmt.Errorf("failed to parse interaction message: %v", err)
+	}
+
+	log.Printf("🎮 Processing user interaction: action=%s, session=%s, data=%+v", interaction.Action, sessionID, interaction.Data)
+
+	// Handle different interaction types using CDP methods
+	switch interaction.Action {
+	case "mousedown", "mouseup", "click":
+		x, okX := interaction.Data["x"].(float64)
+		y, okY := interaction.Data["y"].(float64)
+		if !okX || !okY {
+			log.Printf("❌ Invalid coordinates for %s action: x=%v, y=%v", interaction.Action, interaction.Data["x"], interaction.Data["y"])
+			return fmt.Errorf("invalid coordinates for %s action", interaction.Action)
+		}
+		log.Printf("🖱️ Executing %s at coordinates (%.0f, %.0f)", interaction.Action, x, y)
+		err := cdpClient.Click(x, y)
+		if err != nil {
+			log.Printf("❌ Failed to execute %s at (%.0f, %.0f): %v", interaction.Action, x, y, err)
+		} else {
+			log.Printf("✅ Successfully executed %s at (%.0f, %.0f)", interaction.Action, x, y)
+		}
+		return err
+
+	case "mousemove":
+		// For mouse move, we could implement hover tracking if needed
+		// For now, just log it
+		x, _ := interaction.Data["x"].(float64)
+		y, _ := interaction.Data["y"].(float64)
+		log.Printf("🖱️ Mouse moved to (%.0f, %.0f) - hover tracking", x, y)
+		return nil
+
+	case "type":
+		text, ok := interaction.Data["text"].(string)
+		if !ok {
+			log.Printf("❌ Invalid text for type action: %v", interaction.Data["text"])
+			return fmt.Errorf("invalid text for type action")
+		}
+		log.Printf("⌨️ Typing text: '%s'", text)
+		err := cdpClient.TypeText(text)
+		if err != nil {
+			log.Printf("❌ Failed to type text '%s': %v", text, err)
+		} else {
+			log.Printf("✅ Successfully typed text: '%s'", text)
+		}
+		return err
+
+	case "key":
+		key, ok := interaction.Data["key"].(string)
+		if !ok {
+			log.Printf("❌ Invalid key for key action: %v", interaction.Data["key"])
+			return fmt.Errorf("invalid key for key action")
+		}
+		log.Printf("⌨️ Pressing key: '%s'", key)
+		err := cdpClient.PressKey(key)
+		if err != nil {
+			log.Printf("❌ Failed to press key '%s': %v", key, err)
+		} else {
+			log.Printf("✅ Successfully pressed key: '%s'", key)
+		}
+		return err
+
+	case "scroll":
+		deltaX, okX := interaction.Data["deltaX"].(float64)
+		deltaY, okY := interaction.Data["deltaY"].(float64)
+		if !okX || !okY {
+			log.Printf("❌ Invalid scroll deltas: deltaX=%v, deltaY=%v", interaction.Data["deltaX"], interaction.Data["deltaY"])
+			return fmt.Errorf("invalid scroll deltas")
+		}
+		log.Printf("📜 Scrolling by (%.0f, %.0f)", deltaX, deltaY)
+		err := cdpClient.Scroll(deltaX, deltaY)
+		if err != nil {
+			log.Printf("❌ Failed to scroll by (%.0f, %.0f): %v", deltaX, deltaY, err)
+		} else {
+			log.Printf("✅ Successfully scrolled by (%.0f, %.0f)", deltaX, deltaY)
+		}
+		return err
+
+	default:
+		log.Printf("❓ Unknown interaction action: %s", interaction.Action)
+		return fmt.Errorf("unknown interaction action: %s", interaction.Action)
+	}
 }

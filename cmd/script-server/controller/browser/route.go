@@ -28,6 +28,7 @@ func (h *handler) Route(g *echo.Group) {
 	g.POST("/execute", h.ExecuteTaskAndStream)
 
 
+
 	
 	g.POST("/sessions", h.CreateBrowserSession, CreateBrowserSessionValidation)
 	g.GET("/sessions/:sessionId", h.GetBrowserSession, ValidateSessionID)
@@ -44,10 +45,13 @@ func (h *handler) Route(g *echo.Group) {
 
 	// System Status
 	g.GET("/status", h.GetSystemStatus)
+	
+	// Get active session - helps frontend find current session
+	g.GET("/active-session", h.GetActiveSession)
 
 	// WebSocket and Streaming
-	g.GET("/ws/:sessionId", h.HandleWebSocket, ValidateSessionID)
-	g.GET("/websocket-stream/:sessionId", h.HandleWebSocket, ValidateSessionID) // New WebSocket streaming endpoint
+	g.GET("/ws/:sessionId", h.HandleWebSocketFixed, ValidateSessionID)
+	g.GET("/websocket-stream/:sessionId", h.HandleWebSocketFixed, ValidateSessionID) // New WebSocket streaming endpoint with fixed handling
 	g.GET("/stream/:sessionId", h.StartStreamingSession, ValidateSessionID)
 	g.DELETE("/stream/:sessionId", h.StopStreamingSession, ValidateSessionID)
 	g.POST("/stream/:sessionId/reset", h.ResetStreamingSession, ValidateSessionID)
@@ -59,7 +63,7 @@ func (h *handler) Route(g *echo.Group) {
 
 
 	// Recovery endpoint - helps frontend recover from lost sessions
-	g.POST("/recover/:sessionId", h.RecoverSession, ValidateSessionID)
+	// g.POST("/recover/:sessionId", h.RecoverSession, ValidateSessionID)
 
 	// Live Automation Page - serves live.html template (fixed path to match URL generation)
 	g.GET("/live-automation/:sessionId", h.LiveAutomationPage, ValidateSessionID)

@@ -22,6 +22,8 @@ import (
 	"github.com/gorilla/mux"
 	"github.com/gorilla/websocket"
 	"github.com/joho/godotenv"
+	
+	"go-webrtc/internal/stealth"
 )
 
 // Config holds all configuration values
@@ -437,193 +439,14 @@ func setupRoutes(router *mux.Router) {
 
 // getRandomUserAgent returns a realistic user agent string to avoid detection
 func getRandomUserAgent() string {
-	// Updated user agents with latest versions and more variety
-	userAgents := []string{
-		// Windows Chrome (most common)
-		"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-		"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-		"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
-		"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36",
-		// Windows Edge
-		"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36 Edg/121.0.0.0",
-		"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0",
-		// macOS Chrome
-		"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-		"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-		"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_14_6) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-		// macOS Safari
-		"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15",
-		"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Safari/605.1.15",
-		// Linux Chrome (less common but realistic)
-		"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-		"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-	}
-
-	// Use current time as seed for randomization
-	return userAgents[time.Now().UnixNano()%int64(len(userAgents))]
+	// Use enhanced stealth user agent selection
+	return stealth.GetStealthUserAgent()
 }
 
 // getStealthJavaScript returns JavaScript code to inject for enhanced stealth
 func getStealthJavaScript() string {
-	return `
-		// CRITICAL: Override webdriver property (Google's primary detection)
-		Object.defineProperty(navigator, 'webdriver', {
-			get: () => undefined,
-			configurable: true
-		});
-
-		// Remove automation indicators
-		delete window.cdc_adoQpoasnfa76pfcZLmcfl_Array;
-		delete window.cdc_adoQpoasnfa76pfcZLmcfl_Promise;
-		delete window.cdc_adoQpoasnfa76pfcZLmcfl_Symbol;
-		delete window.cdc_adoQpoasnfa76pfcZLmcfl_JSON;
-		delete window.cdc_adoQpoasnfa76pfcZLmcfl_Object;
-		delete window.cdc_adoQpoasnfa76pfcZLmcfl_Proxy;
-
-		// Override plugins array with realistic plugins
-		const mockPlugins = [
-			{ name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
-			{ name: 'Chromium PDF Plugin', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai', description: 'Portable Document Format' },
-			{ name: 'Microsoft Edge PDF Plugin', filename: 'pdf', description: 'pdf' },
-			{ name: 'WebKit built-in PDF', filename: 'internal-pdf-viewer', description: 'pdf' }
-		];
-		Object.defineProperty(navigator, 'plugins', {
-			get: () => mockPlugins,
-			configurable: true
-		});
-
-		// Override languages with realistic values
-		Object.defineProperty(navigator, 'languages', {
-			get: () => ['en-US', 'en', 'en-GB'],
-			configurable: true
-		});
-
-		// Mock chrome runtime object
-		if (!window.chrome) {
-			window.chrome = {};
-		}
-		if (!window.chrome.runtime) {
-			window.chrome.runtime = {
-				onConnect: null,
-				onMessage: null,
-				connect: function() { return { postMessage: function() {}, onMessage: { addListener: function() {} } }; },
-				sendMessage: function() {},
-				id: undefined
-			};
-		}
-
-		// Override permissions API
-		if (navigator.permissions && navigator.permissions.query) {
-			const originalQuery = navigator.permissions.query.bind(navigator.permissions);
-			navigator.permissions.query = (parameters) => {
-				return parameters.name === 'notifications' ?
-					Promise.resolve({ state: Notification.permission }) :
-					originalQuery(parameters);
-			};
-		}
-
-		// Randomize screen properties slightly
-		const originalScreen = { ...screen };
-		Object.defineProperty(screen, 'availHeight', {
-			get: () => originalScreen.availHeight + Math.floor(Math.random() * 3 - 1),
-			configurable: true
-		});
-		Object.defineProperty(screen, 'availWidth', {
-			get: () => originalScreen.availWidth + Math.floor(Math.random() * 3 - 1),
-			configurable: true
-		});
-
-		// Override canvas fingerprinting with subtle noise
-		const originalGetContext = HTMLCanvasElement.prototype.getContext;
-		HTMLCanvasElement.prototype.getContext = function(type, ...args) {
-			const context = originalGetContext.apply(this, [type, ...args]);
-			
-			if (type === '2d') {
-				const originalGetImageData = context.getImageData;
-				context.getImageData = function(...args) {
-					const imageData = originalGetImageData.apply(this, args);
-					// Add minimal noise to prevent fingerprinting
-					for (let i = 0; i < imageData.data.length; i += Math.floor(Math.random() * 10) + 1) {
-						if (Math.random() < 0.001) {
-							imageData.data[i] = imageData.data[i] ^ (Math.random() < 0.5 ? 1 : 0);
-						}
-					}
-					return imageData;
-				};
-			}
-			
-			return context;
-		};
-
-		// Override WebGL fingerprinting
-		const originalGetParameter = WebGLRenderingContext.prototype.getParameter;
-		WebGLRenderingContext.prototype.getParameter = function(parameter) {
-			if (parameter === 37445) { // UNMASKED_VENDOR_WEBGL
-				return 'Intel Inc.';
-			}
-			if (parameter === 37446) { // UNMASKED_RENDERER_WEBGL
-				return 'Intel Iris OpenGL Engine';
-			}
-			return originalGetParameter.apply(this, arguments);
-		};
-
-		// Mock battery API
-		if ('getBattery' in navigator) {
-			navigator.getBattery = () => Promise.resolve({
-				charging: true,
-				chargingTime: 0,
-				dischargingTime: Infinity,
-				level: 1
-			});
-		}
-
-		// Override connection API
-		if ('connection' in navigator) {
-			Object.defineProperty(navigator, 'connection', {
-				get: () => ({
-					downlink: 10,
-					effectiveType: '4g',
-					rtt: 50,
-					saveData: false
-				}),
-				configurable: true
-			});
-		}
-
-		// Override media devices
-		if (navigator.mediaDevices && navigator.mediaDevices.enumerateDevices) {
-			navigator.mediaDevices.enumerateDevices = () => Promise.resolve([
-				{ deviceId: 'default', groupId: 'group1', kind: 'audioinput', label: 'Default - Microphone' },
-				{ deviceId: 'default', groupId: 'group2', kind: 'audiooutput', label: 'Default - Speaker' },
-				{ deviceId: 'default', groupId: 'group3', kind: 'videoinput', label: 'Default - Camera' }
-			]);
-		}
-
-		// Add realistic timing variations
-		const originalNow = performance.now;
-		performance.now = function() {
-			return originalNow.apply(this) + Math.random() * 0.1;
-		};
-
-		// Override Date.getTimezoneOffset
-		const originalGetTimezoneOffset = Date.prototype.getTimezoneOffset;
-		Date.prototype.getTimezoneOffset = function() {
-			return 300; // EST timezone offset
-		};
-
-		// Add mouse movement simulation
-		let mouseX = Math.random() * window.innerWidth;
-		let mouseY = Math.random() * window.innerHeight;
-		
-		setInterval(() => {
-			mouseX += (Math.random() - 0.5) * 2;
-			mouseY += (Math.random() - 0.5) * 2;
-			mouseX = Math.max(0, Math.min(window.innerWidth, mouseX));
-			mouseY = Math.max(0, Math.min(window.innerHeight, mouseY));
-		}, 100 + Math.random() * 200);
-
-		console.log('🥷 Advanced stealth mode activated');
-	`
+	// Use enhanced stealth JavaScript with 17-phase protection
+	return stealth.GetEnhancedStealthJS()
 }
 
 func (bm *BrowserManager) createBrowserSession(sessionID string, viewport Viewport) (*BrowserSession, error) {
@@ -676,122 +499,8 @@ func (bm *BrowserManager) createBrowserSession(sessionID string, viewport Viewpo
 	bm.mutex.Lock()
 	defer bm.mutex.Unlock()
 
-	// Launch Chrome with enhanced stealth args for better Google compatibility
-	// Generate a random realistic user agent for this session
-	randomUserAgent := getRandomUserAgent()
-
-	// Enhanced stealth arguments specifically designed to bypass Google bot detection
-	args := []string{
-		"--remote-debugging-port=" + strconv.Itoa(port),
-		"--no-sandbox",
-		"--disable-dev-shm-usage",
-		"--window-size=" + strconv.Itoa(viewport.Width) + "," + strconv.Itoa(viewport.Height),
-		"--disable-gpu", // Keep for Docker/headless compatibility
-		"--headless=new",
-
-		// CRITICAL: Core anti-detection flags for Google
-		"--disable-blink-features=AutomationControlled",
-		"--exclude-switches=enable-automation",
-		"--disable-extensions-file-access-check",
-		"--disable-extensions-http-throttling",
-		"--disable-automation",
-		"--disable-save-password-bubble",
-
-		// Realistic user agent and language (randomized per session)
-		"--user-agent=" + randomUserAgent,
-		"--lang=en-US,en",
-		"--accept-lang=en-US,en;q=0.9,en-GB;q=0.8",
-
-		// Enhanced privacy and security settings
-		"--disable-web-security",
-		"--allow-running-insecure-content",
-		"--disable-features=VizDisplayCompositor,AutomationControlled,ScriptStreaming,TranslateUI,BlinkGenPropertyTrees",
-
-		// Advanced stealth browser behavior
-		"--no-first-run",
-		"--disable-default-apps",
-		"--disable-sync",
-		"--disable-background-networking",
-		"--disable-background-timer-throttling",
-		"--disable-backgrounding-occluded-windows",
-		"--disable-renderer-backgrounding",
-		"--disable-ipc-flooding-protection",
-		"--disable-field-trial-config",
-		"--disable-back-forward-cache",
-		"--disable-backing-store-limit",
-
-		// Memory and performance settings
-		"--memory-pressure-off",
-		"--max_old_space_size=2048",
-		"--no-zygote",
-		"--disable-accelerated-2d-canvas",
-		"--disable-accelerated-jpeg-decoding",
-		"--disable-accelerated-mjpeg-decode",
-		"--disable-accelerated-video-decode",
-
-		// Google-specific anti-detection
-		"--disable-client-side-phishing-detection",
-		"--disable-component-update",
-		"--disable-hang-monitor",
-		"--disable-popup-blocking",
-		"--disable-prompt-on-repost",
-		"--disable-domain-reliability",
-		"--disable-component-extensions-with-background-pages",
-		"--disable-breakpad",
-		"--disable-crash-reporter",
-		"--disable-extensions",
-		"--disable-features=TranslateUI",
-		"--disable-ipc-flooding-protection",
-
-		// Credential and keychain settings
-		"--password-store=basic",
-		"--use-mock-keychain",
-		"--disable-password-generation",
-		"--disable-password-manager-reauthentication",
-
-		// Logging and metrics (completely disable)
-		"--disable-logging",
-		"--disable-dev-tools",
-		"--silent",
-		"--log-level=3",
-		"--disable-gpu-sandbox",
-		"--metrics-recording-only",
-		"--no-default-browser-check",
-		"--no-pings",
-		"--no-report-upload",
-
-		// Platform and sandbox settings
-		"--disable-setuid-sandbox",
-		"--ignore-certificate-errors",
-		"--ignore-ssl-errors",
-		"--ignore-certificate-errors-spki-list",
-		"--ignore-certificate-errors-policy-installed",
-		"--allow-running-insecure-content",
-
-		// Additional stealth flags for modern detection
-		"--disable-site-isolation-trials",
-		"--disable-features=VizDisplayCompositor",
-		"--run-all-compositor-stages-before-draw",
-		"--disable-threaded-animation",
-		"--disable-threaded-scrolling",
-		"--disable-checker-imaging",
-		"--disable-new-content-rendering-timeout",
-		"--disable-image-animation-resync",
-		"--disable-partial-raster",
-		"--disable-skia-runtime-opts",
-		"--disable-system-font-check",
-		"--disable-cast-streaming-hw-encoding",
-		"--disable-gpu-memory-buffer-compositor-resources",
-		"--disable-gpu-memory-buffer-video-frames",
-
-		// Fingerprinting protection
-		"--fingerprinting-canvas-measuretext-noise",
-		"--fingerprinting-canvas-image-data-noise",
-		"--fingerprinting-client-rects-noise",
-		"--disable-reading-from-canvas",
-		"--disable-webgl",
-		"--disable-webgl2",
-	}
+	// Use ultra-stealth browser arguments for maximum Google bot detection bypass
+	args := stealth.GetStealthBrowserArguments(sessionID, port, viewport.Width, viewport.Height)
 
 	// Use system Chrome with better server environment detection
 	chromePath := getEnv("CHROME_PATH", "")
@@ -826,8 +535,8 @@ func (bm *BrowserManager) createBrowserSession(sessionID string, viewport Viewpo
 	cmd.Env = append(os.Environ(), "DISPLAY="+cfg.Browser.Display)
 
 	// Log the stealth configuration being used
-	log.Printf("🎭 Launching Chrome with stealth configuration")
-	log.Printf("🕵️ Using random User Agent: %s", randomUserAgent)
+	log.Printf("🎭 Launching Chrome with ultra-stealth configuration")
+	log.Printf("🕵️ Using stealth user agent from pool")
 	log.Printf("📊 Total stealth args: %d", len(args))
 
 	if err := cmd.Start(); err != nil {
@@ -937,6 +646,9 @@ func (bm *BrowserManager) createBrowserSession(sessionID string, viewport Viewpo
 	}()
 
 	log.Printf("✅ Created browser session %s on port %d with enhanced stealth", sessionID, port)
+	
+	// Log stealth mode activation
+	stealth.LogStealthMode(sessionID)
 
 	return session, nil
 }
@@ -2741,7 +2453,7 @@ func generateAutomationURL(baseURL, sessionId string) string {
 }
 
 func generateStreamingURL(baseURL, sessionId string) string {
-	return fmt.Sprintf("%s/api/stream/%s", baseURL, sessionId)
+	return fmt.Sprintf("%s/api/stream-screencast/%s", baseURL, sessionId)
 }
 
 func generateWebSocketURL(baseURL string) string {
@@ -3148,23 +2860,40 @@ func (c *CDPClient) SetupStealthEnvironment() error {
 		return fmt.Errorf("CDP client not initialized")
 	}
 
-	// Enable Runtime domain for script injection
-	_, err := c.SendCommand("Runtime.enable", map[string]interface{}{})
+	// Enable multiple domains for comprehensive stealth including Fetch for request interception
+	domains := []string{"Runtime", "Network", "Page", "Fetch"}
+	for _, domain := range domains {
+		_, err := c.SendCommand(domain+".enable", map[string]interface{}{})
+		if err != nil {
+			log.Printf("⚠️ Failed to enable %s domain: %v", domain, err)
+		}
+	}
+
+	// Enable request interception for dynamic header modification
+	_, err := c.SendCommand("Fetch.enable", map[string]interface{}{
+		"patterns": []map[string]interface{}{
+			{
+				"urlPattern": "*",
+				"requestStage": "Request",
+			},
+		},
+	})
 	if err != nil {
-		return fmt.Errorf("failed to enable Runtime domain: %v", err)
+		log.Printf("⚠️ Failed to enable request interception: %v", err)
 	}
 
-	// Inject stealth script
-	if err := c.InjectStealthScript(); err != nil {
-		return err
+	// Set realistic network conditions
+	networkConditions := stealth.GetStealthNetworkEmulation()
+	_, err = c.SendCommand("Network.emulateNetworkConditions", networkConditions)
+	if err != nil {
+		log.Printf("⚠️ Failed to set network conditions: %v", err)
 	}
 
-	// Set additional stealth headers (removed unused variable)
-
-	// Set user agent override with additional client hints
-	params := map[string]interface{}{
-		"userAgent": getRandomUserAgent(),
-		"acceptLanguage": "en-US,en;q=0.9,en-GB;q=0.8",
+	// Set realistic HTTP headers for all requests
+	headers := stealth.GetUltraStealthHeaders()
+	_, err = c.SendCommand("Network.setUserAgentOverride", map[string]interface{}{
+		"userAgent": headers["User-Agent"],
+		"acceptLanguage": headers["Accept-Language"],
 		"platform": "Win32",
 		"userAgentMetadata": map[string]interface{}{
 			"brands": []map[string]interface{}{
@@ -3180,20 +2909,17 @@ func (c *CDPClient) SetupStealthEnvironment() error {
 			"mobile": false,
 			"bitness": "64",
 		},
-	}
-
-	_, err = c.SendCommand("Network.setUserAgentOverride", params)
+	})
 	if err != nil {
 		log.Printf("⚠️ Failed to set user agent override: %v", err)
 	}
 
-	// Enable Network domain for header manipulation
-	_, err = c.SendCommand("Network.enable", map[string]interface{}{})
-	if err != nil {
-		log.Printf("⚠️ Failed to enable Network domain: %v", err)
+	// Inject ultra-stealth script
+	if err := c.InjectStealthScript(); err != nil {
+		return err
 	}
 
-	// Set viewport to common resolution
+	// Set viewport to randomized common resolution
 	viewportParams := map[string]interface{}{
 		"width":  1920,
 		"height": 1080,

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"html/template"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"strings"
@@ -172,60 +173,275 @@ func (h *handler) GetSystemStatus(c echo.Context) error {
 	return helpers.RespSuccess(c, "System status retrieved successfully", status)
 }
 
-// WebSocket and Streaming Handlers (same as original but simplified)
+// HandleWebSocket handles WebSocket connections with streaming capability
 func (h *handler) HandleWebSocket(c echo.Context) error {
-	sessionID := c.Get("sessionId").(string)
-	
+	sessionID := c.Param("sessionId")
+
+	if sessionID == "" {
+		log.Printf("❌ No session ID provided")
+		return c.String(http.StatusBadRequest, "Session ID is required")
+	}
+
+	log.Printf("🔌 Attempting WebSocket upgrade for session %s", sessionID)
+
+	// Check if the response writer supports hijacking
+	if _, ok := c.Response().Writer.(http.Hijacker); !ok {
+		log.Printf("❌ Response writer does not support hijacking - middleware interference detected")
+		return c.JSON(http.StatusInternalServerError, map[string]interface{}{
+			"error": "WebSocket upgrade not supported - middleware configuration issue",
+			"code": "WEBSOCKET_NOT_SUPPORTED",
+		})
+	}
+
+	// Upgrade to WebSocket connection with error handling
 	upgrader := websocket.Upgrader{
 		CheckOrigin: func(r *http.Request) bool {
 			return true // Allow connections from any origin in development
 		},
+		ReadBufferSize:  1024,
+		WriteBufferSize: 1024,
 	}
-	
+
 	ws, err := upgrader.Upgrade(c.Response(), c.Request(), nil)
 	if err != nil {
 		log.Printf("❌ WebSocket upgrade failed: %v", err)
-		return err
+		// Don't return error here as the connection might already be upgraded
+		if c.Response().Committed {
+			log.Printf("⚠️ Response already committed, WebSocket upgrade may have partially succeeded")
+			return nil
+		}
+		return c.JSON(http.StatusInternalServerError, map[string]interface{}{
+			"error": "WebSocket upgrade failed",
+			"details": err.Error(),
+		})
 	}
 	defer ws.Close()
+
+	log.Printf("✅ WebSocket connected for session %s", sessionID)
 	
-	log.Printf("🔌 WebSocket connected for session %s", sessionID)
-	
-	// Set read and write timeouts to prevent hanging connections
-	ws.SetReadDeadline(time.Now().Add(60 * time.Second))
-	ws.SetWriteDeadline(time.Now().Add(10 * time.Second))
-	
-	// Handle WebSocket messages with improved error handling
+	// Get browser session
+	browserSession, err := h.service.GetBrowserSession(sessionID)
+	if err != nil {
+		log.Printf("❌ Session %s not found: %v", sessionID, err)
+		ws.WriteJSON(map[string]interface{}{
+			"type": "error",
+			"message": "Session not found",
+			"code": "SESSION_NOT_FOUND",
+		})
+		return nil
+	}
+
+	if browserSession.Status == "closed" {
+		log.Printf("⚠️ Browser session %s is closed", sessionID)
+		ws.WriteJSON(map[string]interface{}{
+			"type": "error",
+			"message": "Browser session is closed",
+			"code": "SESSION_CLOSED",
+		})
+		return nil
+	}
+
+	// Check if CDP endpoint is available
+	if browserSession.CDPEndpoint == "" {
+		log.Printf("⚠️ CDP endpoint not available for session %s", sessionID)
+		ws.WriteJSON(map[string]interface{}{
+			"type": "error",
+			"message": "CDP endpoint not available",
+			"code": "CDP_NOT_READY",
+		})
+		return nil
+	}
+
+	log.Printf("🔗 Using CDP endpoint: %s", browserSession.CDPEndpoint)
+
+	// Create CDP client for screenshot capture
+	cdpClient := NewCDPClient(browserSession.CDPEndpoint)
+	if err := cdpClient.Connect(); err != nil {
+		log.Printf("❌ Failed to connect to CDP: %v", err)
+		ws.WriteJSON(map[string]interface{}{
+			"type": "error",
+			"message": "Failed to connect to browser",
+			"code": "CDP_CONNECTION_FAILED",
+		})
+		return nil
+	}
+	defer cdpClient.Close()
+
+	// Send connection success message
+	ws.WriteJSON(map[string]interface{}{
+		"type": "connected",
+		"sessionId": sessionID,
+		"message": "WebSocket streaming started",
+		"timestamp": time.Now().Unix(),
+	})
+
+	// Start streaming loop
+	ticker := time.NewTicker(50 * time.Millisecond) // 20 FPS
+	defer ticker.Stop()
+
+	frameCount := 0
+	maxFrames := 12000 // 10 minutes at 20 FPS
+	connectionErrors := 0
+	maxErrors := 10
+	lastValidFrame := []byte{}
+
+	log.Printf("📹 WebSocket streaming started for session %s", sessionID)
+
+	// Get request context for cancellation
+	ctx := c.Request().Context()
+
+	// Main streaming loop
 	for {
-		_, message, err := ws.ReadMessage()
-		if err != nil {
-			log.Printf("❌ WebSocket read error: %v", err)
-			break
-		}
-		
-		// Reset read deadline for each message
-		ws.SetReadDeadline(time.Now().Add(60 * time.Second))
-		
-		log.Printf("📨 WebSocket message received for session %s: %s", sessionID, string(message))
-		
-		// Echo back the message for now (can be extended for specific commands)
-		response := map[string]interface{}{
-			"type":      "response",
-			"sessionId": sessionID,
-			"message":   "Message received",
-			"original":  string(message),
-		}
-		
-		// Reset write deadline before sending response
-		ws.SetWriteDeadline(time.Now().Add(10 * time.Second))
-		if err := ws.WriteJSON(response); err != nil {
-			log.Printf("❌ WebSocket write error: %v", err)
-			break
+		select {
+		case <-ctx.Done():
+			log.Printf("📸 Client disconnected from WebSocket stream %s after %d frames", sessionID, frameCount)
+			return nil
+
+		case <-ticker.C:
+			// Check limits
+			if frameCount >= maxFrames {
+				log.Printf("📹 Max frames reached (%d), stopping stream", maxFrames)
+				ws.WriteJSON(map[string]interface{}{
+					"type": "stream_ended",
+					"reason": "max_frames_reached",
+					"frames_sent": frameCount,
+				})
+				return nil
+			}
+
+			if connectionErrors >= maxErrors {
+				log.Printf("❌ Too many connection errors (%d), stopping stream", connectionErrors)
+				ws.WriteJSON(map[string]interface{}{
+					"type": "stream_ended",
+					"reason": "too_many_errors",
+					"frames_sent": frameCount,
+				})
+				return nil
+			}
+
+			// Check if session is still active
+			currentSession, err := h.service.GetBrowserSession(sessionID)
+			if err != nil {
+				log.Printf("❌ Failed to get session status: %v", err)
+				connectionErrors++
+				continue
+			}
+
+			if currentSession.Status == "closed" {
+				log.Printf("📸 Browser session %s closed, stopping stream", currentSession.Status)
+				ws.WriteJSON(map[string]interface{}{
+					"type": "stream_ended",
+					"reason": "session_closed",
+					"frames_sent": frameCount,
+				})
+				return nil
+			}
+
+			// Capture screenshot
+			imageData, err := cdpClient.CaptureScreenshot()
+			if err != nil {
+				connectionErrors++
+				log.Printf("⚠️ Screenshot failed (error %d/%d): %v", connectionErrors, maxErrors, err)
+				
+				// Use cached frame if available
+				if len(lastValidFrame) > 0 {
+					log.Printf("🔄 Using cached frame due to screenshot error")
+					imageData = lastValidFrame
+					
+					// Send cached frame
+					ws.SetWriteDeadline(time.Now().Add(1 * time.Second))
+					if err := ws.WriteMessage(websocket.BinaryMessage, imageData); err != nil {
+						log.Printf("❌ WebSocket write error: %v", err)
+						return nil
+					}
+					connectionErrors = 0 // Reset errors since we sent a frame
+					frameCount++
+					continue
+				}
+				
+				// Wait longer for CDP-specific errors
+				if strings.Contains(err.Error(), "CDP endpoint not yet available") {
+					time.Sleep(2 * time.Second)
+				}
+				continue
+			}
+
+			// Validate image data
+			if len(imageData) < 1000 {
+				connectionErrors++
+				log.Printf("⚠️ Screenshot too small (%d bytes), skipping frame", len(imageData))
+				
+				if len(lastValidFrame) > 0 {
+					imageData = lastValidFrame
+				} else {
+					continue
+				}
+			}
+
+			// Cache valid frame
+			lastValidFrame = make([]byte, len(imageData))
+			copy(lastValidFrame, imageData)
+			connectionErrors = 0
+
+			frameCount++
+
+			// Send frame via WebSocket
+			ws.SetWriteDeadline(time.Now().Add(1 * time.Second))
+			if err := ws.WriteMessage(websocket.BinaryMessage, imageData); err != nil {
+				log.Printf("❌ WebSocket write error: %v", err)
+				return nil
+			}
+
+			// Log progress
+			if frameCount%400 == 0 {
+				log.Printf("📹 Streamed %d frames via WebSocket for session %s", frameCount, sessionID)
+			}
+
+		default:
+			// Handle incoming WebSocket messages (non-blocking)
+			ws.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+			messageType, message, err := ws.ReadMessage()
+			
+			if err != nil {
+				// Check if it's just a timeout (expected for non-blocking read)
+				if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+					continue // Continue streaming loop
+				}
+				// Real error - client disconnected
+				log.Printf("❌ WebSocket read error: %v", err)
+				return nil
+			}
+
+			// Handle different message types
+			switch messageType {
+			case websocket.TextMessage:
+				// Handle text messages (commands, etc.)
+				log.Printf("📨 WebSocket text message: %s", string(message))
+				
+				// Echo response for now
+				response := map[string]interface{}{
+					"type": "response",
+					"message": "Message received",
+					"original": string(message),
+					"timestamp": time.Now().Unix(),
+				}
+				
+				ws.SetWriteDeadline(time.Now().Add(1 * time.Second))
+				if err := ws.WriteJSON(response); err != nil {
+					log.Printf("❌ WebSocket write error: %v", err)
+					return nil
+				}
+
+			case websocket.BinaryMessage:
+				// Handle binary messages if needed
+				log.Printf("� WebSocket binary message received (%d bytes)", len(message))
+
+			case websocket.CloseMessage:
+				log.Printf("🔌 WebSocket close message received")
+				return nil
+			}
 		}
 	}
-	
-	log.Printf("🔌 WebSocket disconnected for session %s", sessionID)
-	return nil
 }
 
 func (h *handler) StartStreamingSession(c echo.Context) error {
@@ -518,15 +734,16 @@ func (h *handler) LiveAutomationPage(c echo.Context) error {
 		CreatedAt:    time.Now().Format("2006-01-02 15:04:05"),
 		BrowserID:    sessionID,
 		IsAutomation: true,
-		WebSocketURL: fmt.Sprintf("ws://%s/api/v1/browser_use/browser/ws/%s", baseURL, sessionID),
+		WebSocketURL: fmt.Sprintf("ws://%s/api/v1/browser_use/browser/websocket-stream/%s", baseURL, sessionID),
 	}
 	
-	// Find and parse the live_fixed.html template  
+	// Find and parse the live_websocket.html template  
 	templatePaths := []string{
-		"../../frontend/live_fixed.html",   // From cmd/script-server to root frontend
-		"../../../frontend/live_fixed.html", // Alternative path
-		"frontend/live_fixed.html",         // Current directory
-		"./live_fixed.html",               // Fallback
+		"../../frontend/live_websocket.html",   // From cmd/script-server to root frontend
+		"../../../frontend/live_websocket.html", // Alternative path
+		"frontend/live_websocket.html",         // Current directory
+		"./live_websocket.html",               // Fallback
+		"../../frontend/live_fixed.html",      // Fallback to old template
 	}
 	
 	var templatePath string
@@ -570,20 +787,28 @@ func (h *handler) LiveAutomationPage(c echo.Context) error {
 
 // ExecuteTaskAndStream creates browser first, then task and returns response immediately (FIXED)
 func (h *handler) ExecuteTaskAndStream(c echo.Context) error {
-	// Parse request body
-	var req struct {
-		Task     string `json:"task" validate:"required"`
-		MaxSteps int    `json:"maxSteps"`
-	}
+	// Parse request body with new structure
+	var req ExecuteTaskRequestDto
 	if err := c.Bind(&req); err != nil {
-		return c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "Invalid request format: " + err.Error()})
+	}
+	
+	// Validate request
+	if req.Task == "" {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "task is required"})
 	}
 	
 	if req.MaxSteps == 0 {
-		req.MaxSteps = 13 // Default max steps
+		req.MaxSteps = 25 // Default max steps to match request example
 	}
 	
-	log.Printf("ExecuteTaskAndStream: %s (max steps: %d)", req.Task, req.MaxSteps)
+	// Validate LLM model configuration
+	if req.LLMModel.ApiKey == "" || req.LLMModel.Provider == "" || 
+	   req.LLMModel.Endpoint == "" || req.LLMModel.Deployment == "" || req.LLMModel.LLMModel == "" {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "All llm_model fields are required (apiKey, provider, endpoint, deployment, llmModel)"})
+	}
+	
+	log.Printf("ExecuteTaskAndStream: %s (max steps: %d, provider: %s)", req.Task, req.MaxSteps, req.LLMModel.Provider)
 	
 	// STEP 1: Create browser session FIRST (like old code)
 	log.Printf("Creating browser session first (old code architecture)")
@@ -595,7 +820,7 @@ func (h *handler) ExecuteTaskAndStream(c echo.Context) error {
 		},
 	})
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to create browser session: " + err.Error()})
 	}
 	
 	// Use the returned ID from browser session
@@ -606,47 +831,38 @@ func (h *handler) ExecuteTaskAndStream(c echo.Context) error {
 	log.Printf("⏳ Allowing browser to stabilize before task execution...")
 	time.Sleep(3 * time.Second)
 	
-	// STEP 2: Create task with existing browser (pass CDP endpoint TO Python)
-	log.Printf("🎯 Creating task with existing browser CDP endpoint")
-	_, err = h.service.CreateScriptTaskWithBrowser(ScriptTaskWithBrowserDto{
+	// STEP 2: Create task with existing browser and LLM configuration
+	log.Printf("🎯 Creating task with existing browser CDP endpoint and LLM config")
+	taskID, err := h.service.CreateScriptTaskWithLLM(ScriptTaskWithLLMDto{
 		Task:        req.Task,
 		MaxSteps:    req.MaxSteps,
 		BrowserID:   browserSession.ID,
 		CDPEndpoint: browserSession.CDPEndpoint,
+		LLMConfig:   req.LLMModel,
 	})
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to create task: " + err.Error()})
 	}
 	
-	log.Printf("✅ Created task session %s for streaming", sessionID)
+	log.Printf("✅ Created task %s for session %s", taskID, sessionID)
 	
-	// STEP 3: Return enhanced response immediately (matches old code exactly)
-	// This prevents HTTP timeout issues and matches the old code pattern
-	
-	// Create response with all URLs like the old code
+	// STEP 3: Return response in the exact format requested
 	baseURL := fmt.Sprintf("http://%s", c.Request().Host)
 	
-	response := map[string]interface{}{
-		"success": true,
-		"data": map[string]interface{}{
-			"id":        sessionID,
-			"sessionId": sessionID,
-			"status":    "started",
-			"task":      req.Task,
-			"createdAt": time.Now().Format(time.RFC3339),
-			"message":   "Task started successfully! Use streaming_url for MJPEG stream or automation_url for live page",
-			// URLs for different access methods
-			"live_url":      fmt.Sprintf("%s/api/v1/browser_use/browser/live-automation/%s", baseURL, sessionID),
-			"streaming_url": fmt.Sprintf("%s/api/v1/browser_use/browser/stream-screencast/%s", baseURL, sessionID),
-			"websocket_url": fmt.Sprintf("ws://%s/api/v1/browser_use/browser/ws/%s", c.Request().Host, sessionID), // Fixed: use c.Request().Host directly
-			"browser_info": map[string]interface{}{
-				"browserId":   browserSession.ID,
-				"cdpEndpoint": browserSession.CDPEndpoint,
-				"viewport":    browserSession.Viewport,
-			},
-		},
-		"message": "Task started and streaming available",
+	// Build live_url and WebSocket URL (converted from MJPEG to WebSocket streaming)
+	liveURL := fmt.Sprintf("%s/api/v1/browser_use/browser/live-automation/%s", baseURL, sessionID)
+	socketURL := fmt.Sprintf("ws://%s/api/v1/browser_use/browser/websocket-stream/%s", c.Request().Host, sessionID)
+	
+	response := ExecuteTaskResponseDto{
+		Success:       true,
+		ID:            taskID,
+		SessionID:     sessionID,
+		SessionReused: false, // Always false for new sessions
+		LiveURL:       liveURL,
+		SocketURL:     socketURL,
 	}
+	
+	log.Printf("📤 Returning response with task ID: %s, session ID: %s", taskID, sessionID)
 	
 	return c.JSON(http.StatusOK, response)
 }

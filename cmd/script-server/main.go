@@ -88,12 +88,13 @@ func setupMiddleware(e *echo.Echo) {
 	// Logger middleware with custom format
 	e.Use(middleware.LoggerWithConfig(middleware.LoggerConfig{
 		Format: "${time_rfc3339} ${method} ${uri} ${status} ${latency_human} ${bytes_in}/${bytes_out}\n",
+		Skipper: createWebSocketSkipper(),
 	}))
 
 	// Recover middleware
 	e.Use(middleware.Recover())
 
-	// CORS middleware
+	// CORS middleware - skip for WebSocket routes
 	e.Use(middleware.CORSWithConfig(middleware.CORSConfig{
 		AllowOrigins: getAllowedOrigins(),
 		AllowMethods: []string{echo.GET, echo.POST, echo.PUT, echo.DELETE, echo.OPTIONS},
@@ -105,38 +106,75 @@ func setupMiddleware(e *echo.Echo) {
 			"X-Requested-With",
 		},
 		AllowCredentials: true,
+		Skipper: createWebSocketSkipper(),
 	}))
 
 	// Request timeout middleware - exclude WebSocket and streaming routes
 	e.Use(middleware.TimeoutWithConfig(middleware.TimeoutConfig{
 		Timeout: 30 * time.Second,
-		Skipper: func(c echo.Context) bool {
-			// Skip timeout for WebSocket routes and streaming routes
-			path := c.Request().URL.Path
-			return strings.Contains(path, "/ws/") || 
-				   strings.HasSuffix(path, "/ws") ||
-				   strings.Contains(path, "/stream-screencast/") ||
-				   strings.Contains(path, "/stream/")
-		},
+		Skipper: createWebSocketSkipper(),
 	}))
 
-	// Body limit middleware
-	e.Use(middleware.BodyLimit("10M"))
+	// Body limit middleware - skip for WebSocket routes
+	e.Use(middleware.BodyLimitWithConfig(middleware.BodyLimitConfig{
+		Limit: "10M",
+		Skipper: createWebSocketSkipper(),
+	}))
 
-	// Secure middleware
+	// Secure middleware - skip for WebSocket routes
 	e.Use(middleware.SecureWithConfig(middleware.SecureConfig{
 		XSSProtection:         "1; mode=block",
 		ContentTypeNosniff:    "nosniff",
 		XFrameOptions:         "DENY",
 		HSTSMaxAge:            3600,
 		ContentSecurityPolicy: "default-src 'self'",
+		Skipper: createWebSocketSkipper(),
 	}))
 
 	// Custom error handler
 	e.HTTPErrorHandler = customErrorHandler
 }
 
-// getAllowedOrigins returns the list of allowed CORS origins
+// createWebSocketSkipper creates a skipper function for WebSocket and streaming routes
+func createWebSocketSkipper() func(echo.Context) bool {
+	return func(c echo.Context) bool {
+		path := c.Request().URL.Path
+		method := c.Request().Method
+		
+		// Skip for WebSocket upgrade requests based on headers
+		connection := strings.ToLower(c.Request().Header.Get("Connection"))
+		upgrade := strings.ToLower(c.Request().Header.Get("Upgrade"))
+		if connection == "upgrade" || upgrade == "websocket" {
+			log.Printf("⏭️ Skipping middleware for WebSocket upgrade: %s %s", method, path)
+			return true
+		}
+		
+		// Skip for WebSocket and streaming endpoints
+		skipPatterns := []string{
+			"/websocket-stream/",
+			"/ws/",
+			"/ws",
+			"/stream-screencast/",
+			"/live-automation/",
+			"/stream/",
+		}
+		
+		for _, pattern := range skipPatterns {
+			if strings.Contains(path, pattern) {
+				log.Printf("⏭️ Skipping middleware for streaming path: %s", path)
+				return true
+			}
+		}
+		
+		// Skip for browser automation POST requests (can be long-running)
+		if method == "POST" && strings.Contains(path, "/browser_use/") {
+			log.Printf("⏭️ Skipping middleware for browser POST: %s", path)
+			return true
+		}
+		
+		return false
+	}
+}// getAllowedOrigins returns the list of allowed CORS origins
 func getAllowedOrigins() []string {
 	allowedOrigins := helpers.GetEnv("ALLOWED_ORIGINS", "*")
 	if allowedOrigins == "*" {

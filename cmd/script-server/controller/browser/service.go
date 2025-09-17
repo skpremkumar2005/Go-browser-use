@@ -32,6 +32,7 @@ type Service interface {
 	// Script Task Management
 	CreateScriptTask(data ScriptTaskRequestDto) (*EnhancedTaskResponseDto, error)
 	CreateScriptTaskWithBrowser(data ScriptTaskWithBrowserDto) (*EnhancedTaskResponseDto, error)
+	CreateScriptTaskWithLLM(data ScriptTaskWithLLMDto) (string, error)
 	GetScriptTask(taskID string) (*EnhancedTaskResponseDto, error)
 	ListScriptTasks() ([]EnhancedTaskResponseDto, error)
 	
@@ -388,6 +389,239 @@ func (s *serviceImpl) CreateScriptTaskWithBrowser(data ScriptTaskWithBrowserDto)
 	return response, nil
 }
 
+// CreateScriptTaskWithLLM creates a new script task with existing browser and LLM configuration
+func (s *serviceImpl) CreateScriptTaskWithLLM(data ScriptTaskWithLLMDto) (string, error) {
+	// Validate required fields
+	if data.Task == "" {
+		return "", fmt.Errorf("task field is required")
+	}
+	if data.BrowserID == "" {
+		return "", fmt.Errorf("browserId field is required")
+	}
+	if data.CDPEndpoint == "" {
+		return "", fmt.Errorf("cdpEndpoint field is required")
+	}
+
+	// Generate unique task ID
+	taskID := helpers.GenerateID()
+
+	// Use the provided browser ID as session ID
+	sessionID := data.BrowserID
+
+	// Create script session record that uses existing browser
+	scriptSession := &ScriptSession{
+		ID:          taskID, // Use unique task ID
+		Task:        data.Task,
+		Status:      "queued",
+		BrowserID:   data.BrowserID,
+		CDPEndpoint: data.CDPEndpoint, // Use provided CDP endpoint
+		CreatedAt:   time.Now(),
+		UpdatedAt:   time.Now(),
+		Metadata:    make(map[string]interface{}),
+	}
+
+	// Store LLM configuration in metadata for use in Python script execution
+	scriptSession.Metadata["llmConfig"] = data.LLMConfig
+
+	s.scriptManager.mutex.Lock()
+	s.scriptManager.sessions[taskID] = scriptSession
+	s.scriptManager.mutex.Unlock()
+
+	log.Printf("✅ Created task %s for session %s with LLM provider: %s", taskID, sessionID, data.LLMConfig.Provider)
+
+	// Start task execution in background with LLM configuration
+	go s.executeScriptTaskWithLLM(taskID, data.Task, data.MaxSteps, data.CDPEndpoint, data.LLMConfig)
+
+	return taskID, nil
+}
+
+// executeScriptTaskWithLLM executes task with existing browser and LLM configuration
+func (s *serviceImpl) executeScriptTaskWithLLM(taskID, task string, maxSteps int, cdpEndpoint string, llmConfig LLMModelDto) {
+	// Get session with proper locking
+	s.scriptManager.mutex.RLock()
+	session := s.scriptManager.sessions[taskID]
+	s.scriptManager.mutex.RUnlock()
+
+	if session == nil {
+		log.Printf("❌ Task not found: %s", taskID)
+		return
+	}
+
+	// Update status atomically 
+	s.scriptManager.mutex.Lock()
+	if session.Status == "running" {
+		s.scriptManager.mutex.Unlock()
+		log.Printf("⚠️ Task %s already running, skipping duplicate execution", taskID)
+		return
+	}
+
+	session.Status = "running"
+	session.UpdatedAt = time.Now()
+	s.scriptManager.mutex.Unlock()
+
+	log.Printf("🎯 Processing task %s: %s", taskID, task)
+	log.Printf("🔗 Using existing browser CDP endpoint: %s", cdpEndpoint)
+	log.Printf("🧠 Using LLM provider: %s, model: %s", llmConfig.Provider, llmConfig.LLMModel)
+
+	// Execute Python script with existing CDP endpoint and LLM configuration
+	scriptPath := `D:\Loacl disk D\projects\Go-browser-use\scripts\browser_task_fixed.py`
+
+	log.Printf("🐍 Executing Python script: %s", scriptPath)
+
+	args := []string{
+		scriptPath,
+		taskID,
+		task,
+		fmt.Sprintf("%d", maxSteps),
+		cdpEndpoint, // Pass CDP endpoint to Python
+	}
+
+	cmd := exec.Command(s.config.Script.PythonCommand, args...)
+	
+	// Set environment variables for LLM configuration
+	env := os.Environ()
+	env = append(env, fmt.Sprintf("LLM_API_KEY=%s", llmConfig.ApiKey))
+	env = append(env, fmt.Sprintf("LLM_PROVIDER=%s", llmConfig.Provider))
+	env = append(env, fmt.Sprintf("LLM_ENDPOINT=%s", llmConfig.Endpoint))
+	env = append(env, fmt.Sprintf("LLM_DEPLOYMENT=%s", llmConfig.Deployment))
+	env = append(env, fmt.Sprintf("LLM_MODEL=%s", llmConfig.LLMModel))
+	cmd.Env = env
+
+	log.Printf("🚀 Starting Python script execution with LLM configuration...")
+
+	// Use separate stdout/stderr pipes for better JSON parsing
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		log.Printf("❌ Failed to create stdout pipe: %v", err)
+		return
+	}
+	
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		log.Printf("❌ Failed to create stderr pipe: %v", err)
+		return
+	}
+
+	// Start the command
+	if err := cmd.Start(); err != nil {
+		log.Printf("❌ Failed to start Python script: %v", err)
+		return
+	}
+
+	// Read stderr for logging (separate goroutine)
+	var stderrBuffer strings.Builder
+	go func() {
+		scanner := bufio.NewScanner(stderr)
+		for scanner.Scan() {
+			line := scanner.Text()
+			stderrBuffer.WriteString(line + "\n")
+			log.Printf("🐍 Python: %s", line)
+		}
+	}()
+
+	// Read stdout for JSON result
+	var stdoutBuffer strings.Builder
+	scanner := bufio.NewScanner(stdout)
+	for scanner.Scan() {
+		line := scanner.Text()
+		stdoutBuffer.WriteString(line + "\n")
+	}
+
+	// Wait for script to complete
+	err = cmd.Wait()
+	outputStr := strings.TrimSpace(stdoutBuffer.String())
+	stderrStr := stderrBuffer.String()
+	
+	if err != nil {
+		log.Printf("❌ Script execution failed: %v", err)
+		log.Printf("❌ Script stderr: %s", stderrStr)
+		
+		// Handle specific timeout errors
+		if strings.Contains(stderrStr, "TIMEOUT ERROR") {
+			log.Printf("⚠️ Browser-use timeout detected - likely browser dialog or CDP issues")
+			s.scriptManager.mutex.Lock()
+			session.Status = "failed"
+			session.Metadata["error"] = "Browser timeout - possible dialog interference or CDP connection issues"
+			session.UpdatedAt = time.Now()
+			s.scriptManager.mutex.Unlock()
+			return
+		}
+		
+		// Handle other errors but check for partial success
+		if strings.Contains(stderrStr, "✅ Task completed successfully") ||
+			strings.Contains(stderrStr, "Task completed: True") {
+			log.Printf("✅ Task appears to have completed successfully despite error exit code")
+		} else {
+			s.scriptManager.mutex.Lock()
+			session.Status = "failed"
+			session.Metadata["error"] = fmt.Sprintf("Script failed: %v", err)
+			session.UpdatedAt = time.Now()
+			s.scriptManager.mutex.Unlock()
+			return
+		}
+	}
+
+	log.Printf("📄 Python script completed for task %s", taskID)
+
+	// Parse JSON result from stdout
+	var result map[string]interface{}
+	
+	if outputStr != "" {
+		if err := json.Unmarshal([]byte(outputStr), &result); err == nil {
+			log.Printf("✅ Parsed JSON result from stdout: %+v", result)
+		} else {
+			log.Printf("⚠️ Failed to parse stdout as JSON: %v", err)
+			
+			// Fallback: try to find JSON in the output
+			lines := strings.Split(outputStr, "\n")
+			jsonFound := false
+			
+			for i := len(lines) - 1; i >= 0; i-- {
+				line := strings.TrimSpace(lines[i])
+				if strings.HasPrefix(line, "{") && strings.HasSuffix(line, "}") {
+					if err := json.Unmarshal([]byte(line), &result); err == nil {
+						jsonFound = true
+						log.Printf("✅ Found JSON in line %d: %+v", i, result)
+						break
+					}
+				}
+			}
+			
+			if !jsonFound {
+				log.Printf("⚠️ No valid JSON found in output, creating default result")
+				result = map[string]interface{}{
+					"success": strings.Contains(stderrBuffer.String(), "✅ Task completed successfully"),
+					"result":     "Task execution completed",
+					"raw_output": outputStr,
+				}
+			}
+		}
+	} else {
+		log.Printf("⚠️ No stdout output, creating default result")
+		result = map[string]interface{}{
+			"success": strings.Contains(stderrBuffer.String(), "✅ Task completed successfully"),
+			"result":     "Task execution completed - no output",
+		}
+	}
+
+	// Update session status and store result
+	s.scriptManager.mutex.Lock()
+	success, _ := result["success"].(bool)
+	if success {
+		session.Status = "completed"
+		session.Metadata["result"] = result
+	} else {
+		session.Status = "failed"
+		if errorMsg, exists := result["error"]; exists {
+			session.Metadata["error"] = errorMsg
+		}
+	}
+	session.UpdatedAt = time.Now()
+	s.scriptManager.mutex.Unlock()
+
+	log.Printf("✅ Task %s completed with status: %s", taskID, session.Status)
+}
+
 // Additional methods would continue here...
 // This is a partial implementation showing the structure.
 // The full implementation would include all the original functionality
@@ -405,7 +639,7 @@ func (s *serviceImpl) generateStreamingURL(sessionID string) string {
 }
 
 func (s *serviceImpl) generateWebSocketURL() string {
-	return fmt.Sprintf("ws://%s:%s/api/v1/browser_use/browser/ws", 
+	return fmt.Sprintf("ws://%s:%s/api/v1/browser_use/browser/websocket-stream", 
 		s.config.Server.Host, s.config.Server.Port)
 }
 
@@ -937,8 +1171,245 @@ func (s *serviceImpl) GetSystemStatus() (*SystemStatusDto, error) {
 }
 
 func (s *serviceImpl) HandleWebSocket(conn *websocket.Conn, sessionID string) error {
-	// Implementation here
-	return fmt.Errorf("not implemented")
+	log.Printf("� WebSocket connected for session %s", sessionID)
+
+	// Get script session
+	s.scriptManager.mutex.RLock()
+	session := s.scriptManager.sessions[sessionID]
+	s.scriptManager.mutex.RUnlock()
+
+	if session == nil {
+		log.Printf("❌ Session %s not found: session not found", sessionID)
+		return fmt.Errorf("session %s not found", sessionID)
+	}
+
+	// Check if CDP endpoint is available
+	if session.CDPEndpoint == "" {
+		log.Printf("❌ CDP endpoint not available for session %s - task may still be starting", sessionID)
+		return fmt.Errorf("CDP endpoint not yet available for session %s - task may still be starting", sessionID)
+	}
+
+	log.Printf("🔗 Using CDP endpoint: %s", session.CDPEndpoint)
+
+	// Create CDP client for user interactions (like old working code)
+	cdpClient := s.newCDPClient(session.CDPEndpoint)
+	if err := cdpClient.Connect(); err != nil {
+		log.Printf("❌ Failed to connect to CDP: %v", err)
+		return fmt.Errorf("failed to connect to CDP for session %s: %w", sessionID, err)
+	}
+	defer cdpClient.Close()
+
+	log.Printf("✅ CDP connection established and Page domain enabled")
+
+	// Set up WebSocket connection for user interactions
+	conn.SetReadLimit(512 * 1024) // 512KB limit for messages
+	conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+	conn.SetPongHandler(func(string) error {
+		conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+		return nil
+	})
+
+	// Send handshake message to frontend
+	handshakeMsg := map[string]interface{}{
+		"type":      "handshake",
+		"sessionId": sessionID,
+		"timestamp": time.Now().UnixMilli(),
+	}
+	if handshakeJSON, err := json.Marshal(handshakeMsg); err == nil {
+		conn.WriteMessage(websocket.TextMessage, handshakeJSON)
+		log.Printf("📨 WebSocket text message: %s", string(handshakeJSON))
+	}
+
+	log.Printf("📹 WebSocket streaming started for session %s", sessionID)
+
+	// Enable Input domain for user interactions (like old working code)
+	_, err := cdpClient.SendCommand("Input.enable", map[string]interface{}{})
+	if err != nil {
+		log.Printf("⚠️ Failed to enable Input domain: %v", err)
+	}
+
+	// Create channels for coordinating frame streaming and message handling
+	frameChannel := make(chan []byte, 50)
+	messageChannel := make(chan []byte, 10)
+	done := make(chan struct{})
+
+	// Start screenshot streaming in background goroutine
+	go func() {
+		defer close(frameChannel)
+		
+		ticker := time.NewTicker(50 * time.Millisecond) // 20 FPS
+		defer ticker.Stop()
+
+		frameCount := 0
+		connectionErrors := 0
+		maxErrors := 10
+
+		for {
+			select {
+			case <-done:
+				log.Printf("📸 Frame streaming stopped for session %s", sessionID)
+				return
+			case <-ticker.C:
+				// Check if task is still running
+				s.scriptManager.mutex.RLock()
+				currentStatus := session.Status
+				s.scriptManager.mutex.RUnlock()
+
+				if currentStatus == "completed" || currentStatus == "failed" {
+					log.Printf("📸 Stopping WebSocket stream for session %s (task %s)", sessionID, currentStatus)
+					return
+				}
+
+				// Capture screenshot
+				imageData, err := cdpClient.CaptureScreenshot()
+				if err != nil {
+					connectionErrors++
+					log.Printf("⚠️ Screenshot capture failed in WebSocket (error %d/%d): %v", connectionErrors, maxErrors, err)
+					
+					if connectionErrors >= maxErrors {
+						log.Printf("❌ Too many connection errors in WebSocket, stopping stream")
+						return
+					}
+					continue
+				}
+
+				connectionErrors = 0 // Reset on success
+
+				// Send frame to WebSocket (non-blocking like old working code)
+				select {
+				case frameChannel <- imageData:
+					frameCount++
+					if frameCount%400 == 0 { // Log every 400 frames (20 seconds at 20fps)
+						log.Printf("📹 Streamed %d frames via WebSocket for session %s", frameCount, sessionID)
+					}
+				default:
+					// Channel is full, skip this frame to prevent blocking
+					continue
+				}
+			}
+		}
+	}()
+
+	// Start message reading goroutine for user interactions (like old working code)
+	go func() {
+		defer close(messageChannel)
+		
+		for {
+			select {
+			case <-done:
+				log.Printf("📨 Message reading stopped for session %s", sessionID)
+				return
+			default:
+				// Read incoming messages with timeout
+				conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+				messageType, message, err := conn.ReadMessage()
+				
+				if err != nil {
+					// Check if connection was closed normally
+					if websocket.IsCloseError(err, websocket.CloseGoingAway, websocket.CloseNormalClosure) {
+						log.Printf("🔗 WebSocket connection closed normally for session %s", sessionID)
+						return
+					}
+					
+					// Check if it's a timeout (expected during normal operation)
+					if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+						continue // Normal timeout, continue loop
+					}
+					
+					log.Printf("❌ Failed to read WebSocket message for session %s: %v", sessionID, err)
+					return
+				}
+
+				// Handle user interaction messages (like old working code)
+				if messageType == websocket.TextMessage {
+					select {
+					case messageChannel <- message:
+						// Message queued successfully
+					default:
+						log.Printf("⚠️ Message channel full, dropping message")
+					}
+				}
+			}
+		}
+	}()
+
+	// Main message processing loop - coordinate frames and user interactions (like old working code)
+	for {
+		select {
+		case frame, ok := <-frameChannel:
+			if !ok {
+				log.Printf("� Frame channel closed for session %s", sessionID)
+				close(done)
+				return nil
+			}
+
+			// Send binary frame to WebSocket client
+			conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+			if err := conn.WriteMessage(websocket.BinaryMessage, frame); err != nil {
+				log.Printf("❌ Failed to write WebSocket frame for session %s: %v", sessionID, err)
+				close(done)
+				return err
+			}
+
+		case message, ok := <-messageChannel:
+			if !ok {
+				log.Printf("📨 Message channel closed for session %s", sessionID)
+				close(done)
+				return nil
+			}
+
+			// Process user interaction message (like old working code)
+			if err := s.handleUserInteraction(cdpClient, message, sessionID); err != nil {
+				log.Printf("⚠️ Failed to handle user interaction for session %s: %v", sessionID, err)
+			}
+
+		case <-time.After(30 * time.Second):
+			// Send periodic ping to keep connection alive
+			conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+			if err := conn.WriteMessage(websocket.PingMessage, nil); err != nil {
+				log.Printf("❌ Failed to send WebSocket ping for session %s: %v", sessionID, err)
+				close(done)
+				return err
+			}
+		}
+	}
+}
+
+// handleUserInteraction processes user interaction messages from WebSocket (like old working code)
+func (s *serviceImpl) handleUserInteraction(cdpClient *CDPClient, message []byte, sessionID string) error {
+	var interaction struct {
+		Type string  `json:"type"`
+		X    float64 `json:"x"`
+		Y    float64 `json:"y"`
+		Text string  `json:"text"`
+		Key  string  `json:"key"`
+		DeltaX float64 `json:"deltaX"`
+		DeltaY float64 `json:"deltaY"`
+	}
+
+	if err := json.Unmarshal(message, &interaction); err != nil {
+		return fmt.Errorf("failed to parse interaction message: %v", err)
+	}
+
+	log.Printf("🎮 Processing user interaction: %s for session %s", interaction.Type, sessionID)
+
+	// Handle different interaction types using CDP methods (like old working code)
+	switch interaction.Type {
+	case "click":
+		return cdpClient.Click(interaction.X, interaction.Y)
+		
+	case "type":
+		return cdpClient.TypeText(interaction.Text)
+		
+	case "key":
+		return cdpClient.PressKey(interaction.Key)
+		
+	case "scroll":
+		return cdpClient.Scroll(interaction.DeltaX, interaction.DeltaY)
+		
+	default:
+		return fmt.Errorf("unknown interaction type: %s", interaction.Type)
+	}
 }
 
 func (s *serviceImpl) StartStreamingSession(sessionID string) error {
@@ -1049,7 +1520,7 @@ func (bm *BrowserManager) createBrowserSession(sessionID string, viewport Viewpo
 	bm.mutex.Lock()
 	defer bm.mutex.Unlock()
 
-	// Launch Chrome with Windows-compatible args
+	// Launch Chrome with OPTIMIZED Windows args for faster startup
 	args := []string{
 		"--remote-debugging-port=" + fmt.Sprintf("%d", port),
 		"--no-sandbox",
@@ -1057,24 +1528,62 @@ func (bm *BrowserManager) createBrowserSession(sessionID string, viewport Viewpo
 		"--window-size=" + fmt.Sprintf("%d", viewport.Width) + "," + fmt.Sprintf("%d", viewport.Height),
 		"--disable-gpu",
 		"--headless=new",
-		"--disable-web-security",
-		"--disable-features=VizDisplayCompositor",
-		"--disable-background-timer-throttling",
-		"--disable-renderer-backgrounding",
-		"--disable-dev-shm-usage",
+		
+		// PERFORMANCE OPTIMIZATIONS - Faster startup
 		"--no-first-run",
 		"--disable-default-apps",
-		"--disable-extensions",
+		"--disable-extensions", 
 		"--disable-plugins",
-		"--disable-sync",
-		"--disable-popup-blocking",           // Prevent popup interference
-		"--disable-notifications",           // Prevent notification dialogs
-		"--disable-infobars",               // Prevent info bars
-		"--no-default-browser-check",       // Prevent default browser dialogs
-		"--disable-translate",              // Prevent translation popups
-		"--disable-features=TranslateUI",   // Additional translation prevention
+		"--disable-background-timer-throttling",
+		"--disable-backgrounding-occluded-windows",
+		"--disable-renderer-backgrounding",
+		"--disable-features=TranslateUI,BlinkGenPropertyTrees",
 		"--disable-component-extensions-with-background-pages",
+		"--disable-background-networking",
+		"--disable-sync",
+		"--no-default-browser-check",
+		"--disable-hang-monitor",
+		"--disable-prompt-on-repost",
+		"--disable-domain-reliability",
+		"--disable-component-update",
+		
+		// MEMORY & STARTUP OPTIMIZATIONS
+		"--memory-pressure-off",
+		"--max_old_space_size=1024",
+		"--aggressive-cache-discard",
+		"--disable-background-mode",
+		"--disable-client-side-phishing-detection",
+		"--disable-dev-tools",
+		"--disable-extensions-file-access-check",
+		"--disable-extensions-http-throttling",
+		"--disable-logging",
+		"--log-level=3",
+		"--silent",
+		
+		// FASTER RENDERING
+		"--disable-accelerated-2d-canvas",
+		"--disable-accelerated-jpeg-decoding",
+		"--disable-accelerated-mjpeg-decode",
+		"--disable-accelerated-video-decode",
+		"--disable-gpu-memory-buffer-compositor-resources",
+		"--disable-gpu-memory-buffer-video-frames",
+		"--disable-threaded-animation",
+		"--disable-threaded-scrolling",
+		"--disable-checker-imaging",
+		"--disable-features=VizDisplayCompositor",
+		
+		// PREVENT DIALOGS & POPUPS
+		"--disable-popup-blocking",
+		"--disable-notifications",
+		"--disable-infobars",
+		"--disable-translate",
 		"--disable-ipc-flooding-protection",
+		"--disable-web-security",
+		
+		// STEALTH
+		"--disable-blink-features=AutomationControlled",
+		"--exclude-switches=enable-automation",
+		"--disable-automation",
 		"--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
 	}
 
@@ -1112,14 +1621,19 @@ func (bm *BrowserManager) createBrowserSession(sessionID string, viewport Viewpo
 		return nil, fmt.Errorf("failed to start Chrome: %v", err)
 	}
 
-	// Wait for Chrome to start and be ready
+	// Wait for Chrome to start and be ready - OPTIMIZED timing
 	log.Printf("⏳ Waiting for Chrome to initialize on port %d...", port)
-	time.Sleep(3 * time.Second) // Reduced initial wait
+	time.Sleep(1500 * time.Millisecond) // Reduced from 3s to 1.5s
 
-	// Discover WebSocket URL from Chrome's JSON endpoint
+	// Discover WebSocket URL from Chrome's JSON endpoint - FASTER polling
 	var websocketURL string
-	maxRetries := 15 // Increased retries
+	maxRetries := 20 // Reduced from 15
 	for i := 0; i < maxRetries; i++ {
+		// Try every 250ms instead of 1500ms for faster startup detection
+		if i > 0 {
+			time.Sleep(250 * time.Millisecond)
+		}
+		
 		// Try to get the WebSocket URL from Chrome's /json endpoint
 		if wsURL, err := bm.getWebSocketURL(port); err == nil {
 			websocketURL = wsURL
@@ -1135,8 +1649,9 @@ func (bm *BrowserManager) createBrowserSession(sessionID string, viewport Viewpo
 			bm.sessionMutex.Unlock()
 			return nil, fmt.Errorf("Chrome failed to start properly: CDP endpoint not accessible after %d attempts", maxRetries)
 		}
-		log.Printf("⏳ Chrome not ready yet, retrying... (%d/%d)", i+1, maxRetries)
-		time.Sleep(1500 * time.Millisecond) // Faster retry interval
+		if i%4 == 0 { // Log every second (4 attempts)
+			log.Printf("⏳ Chrome not ready yet, retrying... (%d/%d)", i+1, maxRetries)
+		}
 	}
 
 	// Create session
@@ -1444,6 +1959,183 @@ func (c *CDPClient) navigateToPage(url string) error {
 	
 	// Wait a moment for the page to load
 	time.Sleep(1 * time.Second)
+	return nil
+}
+
+// GetPageURL gets the current page URL using CDP (like old working code)
+func (c *CDPClient) GetPageURL() (string, error) {
+	// Enable Page domain
+	_, err := c.SendCommand("Page.enable", map[string]interface{}{})
+	if err != nil {
+		return "", fmt.Errorf("failed to enable Page domain: %v", err)
+	}
+
+	// Get page URL
+	response, err := c.SendCommand("Runtime.evaluate", map[string]interface{}{
+		"expression": "window.location.href",
+	})
+	if err != nil {
+		return "", fmt.Errorf("failed to get page URL: %v", err)
+	}
+
+	result, ok := response["result"].(map[string]interface{})
+	if !ok {
+		return "", fmt.Errorf("invalid result response")
+	}
+
+	value, ok := result["value"].(string)
+	if !ok {
+		return "", fmt.Errorf("invalid URL value")
+	}
+
+	return value, nil
+}
+
+// Click performs a mouse click at specified coordinates using CDP Input domain (like old working code)
+func (c *CDPClient) Click(x, y float64) error {
+	// Enable Input domain for proper mouse events
+	_, err := c.SendCommand("Input.enable", map[string]interface{}{})
+	if err != nil {
+		log.Printf("⚠️ Failed to enable Input domain: %v", err)
+	}
+
+	// Send mousePressed event
+	_, err = c.SendCommand("Input.dispatchMouseEvent", map[string]interface{}{
+		"type":       "mousePressed",
+		"x":          x,
+		"y":          y,
+		"button":     "left",
+		"clickCount": 1,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to dispatch mousePressed event: %v", err)
+	}
+
+	// Small delay between press and release for realistic interaction
+	time.Sleep(50 * time.Millisecond)
+
+	// Send mouseReleased event
+	_, err = c.SendCommand("Input.dispatchMouseEvent", map[string]interface{}{
+		"type":       "mouseReleased",
+		"x":          x,
+		"y":          y,
+		"button":     "left",
+		"clickCount": 1,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to dispatch mouseReleased event: %v", err)
+	}
+
+	log.Printf("🖱️ Clicked at coordinates (%.0f, %.0f) using CDP Input domain", x, y)
+	return nil
+}
+
+// TypeText types text using CDP Input domain (like old working code)
+func (c *CDPClient) TypeText(text string) error {
+	// Enable Input domain
+	_, err := c.SendCommand("Input.enable", map[string]interface{}{})
+	if err != nil {
+		log.Printf("⚠️ Failed to enable Input domain: %v", err)
+	}
+
+	// Type each character individually for proper input handling
+	for _, char := range text {
+		charStr := string(char)
+		
+		// Send key down
+		_, err = c.SendCommand("Input.dispatchKeyEvent", map[string]interface{}{
+			"type": "char",
+			"text": charStr,
+		})
+		if err != nil {
+			return fmt.Errorf("failed to type character '%s': %v", charStr, err)
+		}
+
+		// Small delay between characters for realistic typing
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	log.Printf("⌨️ Typed text: '%s' using CDP Input domain", text)
+	return nil
+}
+
+// PressKey presses a specific key using CDP Input domain (like old working code)
+func (c *CDPClient) PressKey(key string) error {
+	// Enable Input domain
+	_, err := c.SendCommand("Input.enable", map[string]interface{}{})
+	if err != nil {
+		log.Printf("⚠️ Failed to enable Input domain: %v", err)
+	}
+
+	// Map common keys to their CDP key codes
+	keyMap := map[string]string{
+		"Enter":     "Enter",
+		"Tab":       "Tab",
+		"Escape":    "Escape",
+		"Backspace": "Backspace",
+		"Delete":    "Delete",
+		"ArrowUp":   "ArrowUp",
+		"ArrowDown": "ArrowDown", 
+		"ArrowLeft": "ArrowLeft",
+		"ArrowRight":"ArrowRight",
+		"Space":     "Space",
+	}
+
+	cdpKey := key
+	if mappedKey, exists := keyMap[key]; exists {
+		cdpKey = mappedKey
+	}
+
+	// Send key down
+	_, err = c.SendCommand("Input.dispatchKeyEvent", map[string]interface{}{
+		"type": "keyDown",
+		"key":  cdpKey,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to send keyDown for '%s': %v", key, err)
+	}
+
+	// Small delay
+	time.Sleep(50 * time.Millisecond)
+
+	// Send key up
+	_, err = c.SendCommand("Input.dispatchKeyEvent", map[string]interface{}{
+		"type": "keyUp",
+		"key":  cdpKey,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to send keyUp for '%s': %v", key, err)
+	}
+
+	log.Printf("⌨️ Pressed key: '%s' using CDP Input domain", key)
+	return nil
+}
+
+// Scroll scrolls the page using CDP Input domain (like old working code)
+func (c *CDPClient) Scroll(deltaX, deltaY float64) error {
+	// Enable Input domain
+	_, err := c.SendCommand("Input.enable", map[string]interface{}{})
+	if err != nil {
+		log.Printf("⚠️ Failed to enable Input domain: %v", err)
+	}
+
+	// Get viewport center for scroll position
+	viewportX := float64(960) // Center of 1920px width
+	viewportY := float64(540) // Center of 1080px height
+
+	// Send wheel event using CDP Input domain (like old working code)
+	_, err = c.SendCommand("Input.dispatchMouseEvent", map[string]interface{}{
+		"type":   "mouseWheel",
+		"x":      viewportX,
+		"y":      viewportY,
+		"deltaX": deltaX,
+		"deltaY": deltaY,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to dispatch scroll event: %v", err)
+	}
+
+	log.Printf("📜 Scrolled by (%.0f, %.0f) using CDP Input domain", deltaX, deltaY)
 	return nil
 }
 

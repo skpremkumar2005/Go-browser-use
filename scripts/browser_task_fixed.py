@@ -37,37 +37,116 @@ class UnifiedBrowserUseAgent:
         self.load_environment()
     
     def load_environment(self):
-        """Load and validate environment variables"""
+        """Load and validate environment variables with support for different LLM providers"""
         try:
-            # Azure OpenAI configuration
+            # Check for new LLM configuration from environment variables (set by Go backend)
+            llm_provider = os.getenv("LLM_PROVIDER")
+            llm_api_key = os.getenv("LLM_API_KEY")
+            llm_endpoint = os.getenv("LLM_ENDPOINT")
+            llm_deployment = os.getenv("LLM_DEPLOYMENT")
+            llm_model = os.getenv("LLM_MODEL")
+            
+            if all([llm_provider, llm_api_key, llm_endpoint, llm_deployment, llm_model]):
+                logger.info(f"✅ Using LLM configuration from Go backend: {llm_provider} - {llm_model}")
+                self._configure_llm_from_env(llm_provider, llm_api_key, llm_endpoint, llm_deployment, llm_model)
+                return
+            
+            # Fallback to legacy Azure OpenAI configuration from environment
             api_key = os.getenv("AZURE_OPENAI_API_KEY")
             api_base = os.getenv("AZURE_OPENAI_API_BASE") or os.getenv("AZURE_OPENAI_ENDPOINT")
-            api_version = os.getenv("AZURE_OPENAI_API_VERSION", "2024-02-15-preview")
+            api_version = os.getenv("AZURE_OPENAI_API_VERSION", "2024-08-01-preview")  # Updated default version
             deployment_name = os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME")
             
             if not all([api_key, api_base, deployment_name]):
-                logger.error("❌ Missing required Azure OpenAI environment variables")
+                logger.error("❌ Missing required LLM configuration")
+                logger.error("Either provide LLM_* variables from Go backend or Azure OpenAI variables")
                 logger.error("Required: AZURE_OPENAI_API_KEY, AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_DEPLOYMENT_NAME")
                 sys.exit(1)
             
             # Import ChatAzureOpenAI for proper Azure OpenAI configuration
             from browser_use.llm import ChatAzureOpenAI
             
-            # Create ChatAzureOpenAI for Azure OpenAI (correct approach from browser_use_agent.py)
-            # Configure Azure OpenAI LLM
+            # Create ChatAzureOpenAI for Azure OpenAI (fallback configuration)
             self.llm = ChatAzureOpenAI(
                 model=deployment_name,
                 api_key=api_key,
                 azure_endpoint=api_base,
                 azure_deployment=deployment_name,
                 api_version=api_version,
-                temperature=0.7
+                temperature=0.7,
+                max_retries=3,  # Add retry for rate limiting
+                timeout=60.0,   # Increase timeout
             )
             
-            logger.info("✅ Azure OpenAI LLM configured successfully")
+            logger.info("✅ Azure OpenAI LLM configured successfully (fallback)")
             
         except Exception as e:
             logger.error(f"❌ Failed to configure LLM: {e}")
+            sys.exit(1)
+    
+    def _configure_llm_from_env(self, provider: str, api_key: str, endpoint: str, deployment: str, model: str):
+        """Configure LLM based on provider from Go backend environment variables"""
+        try:
+            if provider.lower() == "azure":
+                from browser_use.llm import ChatAzureOpenAI
+                
+                # Extract API version from endpoint if present, otherwise use default
+                api_version = "2024-08-01-preview"  # Updated to newer version that supports json_schema
+                if "api-version=" in endpoint:
+                    import urllib.parse
+                    parsed_url = urllib.parse.urlparse(endpoint)
+                    query_params = urllib.parse.parse_qs(parsed_url.query)
+                    if "api-version" in query_params:
+                        api_version = query_params["api-version"][0]
+                        # Ensure we use a compatible version
+                        if api_version < "2024-08-01-preview":
+                            logger.warning(f"⚠️ API version {api_version} may not support all features, using 2024-08-01-preview")
+                            api_version = "2024-08-01-preview"
+                
+                self.llm = ChatAzureOpenAI(
+                    model=model,
+                    api_key=api_key,
+                    azure_endpoint=endpoint,
+                    azure_deployment=deployment,
+                    api_version=api_version,
+                    temperature=0.7,
+                    max_retries=3,  # Add retry for rate limiting
+                    timeout=60.0,   # Increase timeout
+                )
+                logger.info(f"✅ Azure OpenAI LLM configured: {model} at {endpoint}")
+                
+            elif provider.lower() == "openai":
+                from browser_use.llm import ChatOpenAI
+                
+                self.llm = ChatOpenAI(
+                    model=model,
+                    api_key=api_key,
+                    base_url=endpoint if endpoint != "https://api.openai.com/v1" else None,
+                    temperature=0.7
+                )
+                logger.info(f"✅ OpenAI LLM configured: {model}")
+                
+            elif provider.lower() == "anthropic":
+                from browser_use.llm import ChatAnthropic
+                
+                self.llm = ChatAnthropic(
+                    model=model,
+                    api_key=api_key,
+                    base_url=endpoint if endpoint != "https://api.anthropic.com" else None,
+                    temperature=0.7
+                )
+                logger.info(f"✅ Anthropic LLM configured: {model}")
+                
+            else:
+                logger.error(f"❌ Unsupported LLM provider: {provider}")
+                logger.error("Supported providers: azure, openai, anthropic")
+                sys.exit(1)
+                
+        except ImportError as e:
+            logger.error(f"❌ Failed to import LLM class for {provider}: {e}")
+            sys.exit(1)
+        except Exception as e:
+            logger.error(f"❌ Failed to configure {provider} LLM: {e}")
             sys.exit(1)
     
     async def create_agent(self, task: str, cdp_endpoint: str | None = None, max_steps: int = 10):

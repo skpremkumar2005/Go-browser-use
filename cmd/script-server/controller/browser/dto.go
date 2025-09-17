@@ -174,3 +174,38 @@ type ScriptTaskWithBrowserDto struct {
 	BrowserID   string `json:"browserId" validate:"required"`
 	CDPEndpoint string `json:"cdpEndpoint" validate:"required"`
 }
+
+// ScriptTaskWithLLMDto for creating task with existing browser and LLM configuration
+type ScriptTaskWithLLMDto struct {
+	Task        string      `json:"task" validate:"required"`
+	MaxSteps    int         `json:"maxSteps"`
+	BrowserID   string      `json:"browserId" validate:"required"`
+	CDPEndpoint string      `json:"cdpEndpoint" validate:"required"`
+	LLMConfig   LLMModelDto `json:"llmConfig" validate:"required"`
+}
+
+// LLM Model Configuration DTOs
+type LLMModelDto struct {
+	ApiKey     string `json:"apiKey" validate:"required"`
+	Provider   string `json:"provider" validate:"required"`
+	Endpoint   string `json:"endpoint" validate:"required"`
+	Deployment string `json:"deployment" validate:"required"`
+	LLMModel   string `json:"llmModel" validate:"required"`
+}
+
+// ExecuteTaskAndStream Request DTO
+type ExecuteTaskRequestDto struct {
+	MaxSteps int         `json:"maxSteps" validate:"min=1,max=100"`
+	Task     string      `json:"task" validate:"required,min=1"`
+	LLMModel LLMModelDto `json:"llm_model" validate:"required"`
+}
+
+// ExecuteTaskAndStream Response DTO 
+type ExecuteTaskResponseDto struct {
+	Success       bool   `json:"success"`
+	ID            string `json:"id"`
+	SessionID     string `json:"sessionId"`
+	SessionReused bool   `json:"session_reused"`
+	LiveURL       string `json:"live_url"`
+	SocketURL     string `json:"socket_url"`
+}

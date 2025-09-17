@@ -1,0 +1,530 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Live Browser Stream - WebSocket</title>
+    <style>
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+
+      body {
+        background: #000;
+        color: #fff;
+        font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+        height: 100vh;
+        overflow: hidden;
+      }
+
+      .container {
+        position: relative;
+        width: 100%;
+        height: 100vh;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+      }
+
+      .browser-container {
+        position: relative;
+        max-width: 100%;
+        max-height: 100%;
+        border: 1px solid #333;
+        background: #111;
+      }
+
+      #browserCanvas {
+        max-width: 100%;
+        max-height: 100vh;
+        object-fit: contain;
+        display: block;
+        background: #222;
+      }
+
+      .loading-overlay {
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        background: rgba(0, 0, 0, 0.8);
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        z-index: 1000;
+      }
+
+      .loading-content {
+        text-align: center;
+        color: #fff;
+      }
+
+      .spinner {
+        width: 40px;
+        height: 40px;
+        border: 4px solid #333;
+        border-top: 4px solid #fff;
+        border-radius: 50%;
+        animation: spin 1s linear infinite;
+        margin: 0 auto 20px;
+      }
+
+      @keyframes spin {
+        0% {
+          transform: rotate(0deg);
+        }
+        100% {
+          transform: rotate(360deg);
+        }
+      }
+
+      .status {
+        position: absolute;
+        top: 10px;
+        right: 10px;
+        background: rgba(0, 0, 0, 0.7);
+        padding: 5px 10px;
+        border-radius: 4px;
+        font-size: 12px;
+        z-index: 100;
+      }
+
+      .status.connected {
+        color: #4caf50;
+      }
+
+      .status.connecting {
+        color: #ff9800;
+      }
+
+      .status.error {
+        color: #f44336;
+      }
+
+      .fps-counter {
+        position: absolute;
+        top: 10px;
+        left: 10px;
+        background: rgba(0, 0, 0, 0.7);
+        padding: 5px 10px;
+        border-radius: 4px;
+        font-size: 11px;
+        color: #4caf50;
+        z-index: 100;
+      }
+
+      .error-message {
+        position: absolute;
+        bottom: 20px;
+        left: 50%;
+        transform: translateX(-50%);
+        background: rgba(244, 67, 54, 0.9);
+        color: white;
+        padding: 10px 20px;
+        border-radius: 4px;
+        max-width: 80%;
+        text-align: center;
+        z-index: 1001;
+      }
+
+      .info-panel {
+        position: absolute;
+        bottom: 10px;
+        left: 10px;
+        background: rgba(0, 0, 0, 0.7);
+        padding: 8px 12px;
+        border-radius: 4px;
+        font-size: 10px;
+        color: #aaa;
+        z-index: 100;
+        max-width: 200px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <div class="browser-container">
+        <canvas id="browserCanvas"></canvas>
+        <div id="loadingOverlay" class="loading-overlay">
+          <div class="loading-content">
+            <div class="spinner"></div>
+            <div id="loadingText">Connecting to WebSocket stream...</div>
+          </div>
+        </div>
+        <div id="status" class="status connecting">Connecting...</div>
+        <div id="fpsCounter" class="fps-counter" style="display: none">
+          FPS: 0
+        </div>
+        <div id="infoPanel" class="info-panel" style="display: none">
+          <div>Frames: <span id="frameCount">0</span></div>
+          <div>Errors: <span id="errorCount">0</span></div>
+          <div>Size: <span id="frameSize">0x0</span></div>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      // Get sessionId from URL path
+      const sessionId = window.location.pathname.split("/").pop();
+      console.log("🎥 Initializing WebSocket stream for session:", sessionId);
+
+      // DOM elements
+      const canvas = document.getElementById("browserCanvas");
+      const ctx = canvas.getContext("2d");
+      const loadingOverlay = document.getElementById("loadingOverlay");
+      const loadingText = document.getElementById("loadingText");
+      const status = document.getElementById("status");
+      const fpsCounter = document.getElementById("fpsCounter");
+      const infoPanel = document.getElementById("infoPanel");
+      const frameCount = document.getElementById("frameCount");
+      const errorCount = document.getElementById("errorCount");
+      const frameSize = document.getElementById("frameSize");
+
+      // WebSocket configuration
+      const websocketUrl = `ws://${window.location.host}/api/v1/browser_use/browser/websocket-stream/${sessionId}`;
+
+      // State variables
+      let websocket = null;
+      let isConnected = false;
+      let reconnectCount = 0;
+      let maxReconnects = 10;
+      let reconnectDelay = 2000;
+      let frameCounter = 0;
+      let errorCounter = 0;
+      let lastFrameTime = 0;
+      let fpsHistory = [];
+      let currentFPS = 0;
+
+      // Canvas state
+      let canvasWidth = 1200;
+      let canvasHeight = 800;
+
+      // Initialize canvas
+      function initializeCanvas() {
+        canvas.width = canvasWidth;
+        canvas.height = canvasHeight;
+        ctx.fillStyle = "#222";
+        ctx.fillRect(0, 0, canvasWidth, canvasHeight);
+
+        // Draw initial loading message
+        ctx.fillStyle = "#666";
+        ctx.font = "16px Arial";
+        ctx.textAlign = "center";
+        ctx.fillText(
+          "Waiting for WebSocket connection...",
+          canvasWidth / 2,
+          canvasHeight / 2
+        );
+      }
+
+      // WebSocket connection management
+      function connectWebSocket() {
+        if (websocket && websocket.readyState === WebSocket.CONNECTING) {
+          console.log("⚠️ WebSocket connection already in progress");
+          return;
+        }
+
+        if (websocket && websocket.readyState === WebSocket.OPEN) {
+          console.log("⚠️ WebSocket already connected");
+          return;
+        }
+
+        console.log(
+          `🔗 Connecting to WebSocket (attempt ${reconnectCount + 1})...`
+        );
+        showStatus("Connecting...", "connecting");
+        showLoadingOverlay(
+          `Connecting... (${reconnectCount + 1}/${maxReconnects + 1})`
+        );
+
+        try {
+          websocket = new WebSocket(websocketUrl);
+          websocket.binaryType = "arraybuffer";
+
+          websocket.onopen = function () {
+            console.log("✅ WebSocket connected");
+            isConnected = true;
+            reconnectCount = 0;
+            errorCounter = 0;
+            showStatus("Connected", "connected");
+            hideLoadingOverlay();
+            showInfoPanel();
+
+            // Send initial handshake
+            const handshake = JSON.stringify({
+              type: "handshake",
+              sessionId: sessionId,
+              timestamp: Date.now(),
+            });
+            websocket.send(handshake);
+          };
+
+          websocket.onmessage = function (event) {
+            if (typeof event.data === "string") {
+              // Handle JSON messages
+              try {
+                const data = JSON.parse(event.data);
+                handleTextMessage(data);
+              } catch (e) {
+                console.warn("⚠️ Failed to parse message:", e);
+              }
+            } else if (event.data instanceof ArrayBuffer) {
+              // Handle binary frame data
+              handleBinaryFrame(event.data);
+            }
+          };
+
+          websocket.onclose = function (event) {
+            console.log(
+              `🔌 WebSocket closed (code: ${event.code}, reason: ${event.reason})`
+            );
+            isConnected = false;
+            handleDisconnection();
+          };
+
+          websocket.onerror = function (error) {
+            console.error("❌ WebSocket error:", error);
+            errorCounter++;
+            updateInfoPanel();
+          };
+        } catch (error) {
+          console.error("❌ Failed to create WebSocket:", error);
+          handleDisconnection();
+        }
+      }
+
+      // Handle text messages
+      function handleTextMessage(data) {
+        console.log("📨 Text message:", data);
+
+        switch (data.type) {
+          case "connected":
+            console.log("🎉 Stream started for session:", data.sessionId);
+            break;
+          case "error":
+            console.error("❌ Server error:", data.message);
+            showError(`Server error: ${data.message}`);
+            break;
+          case "stream_ended":
+            console.log("📺 Stream ended:", data.reason);
+            showError(`Stream ended: ${data.reason}`);
+            break;
+        }
+      }
+
+      // Handle binary frame data
+      function handleBinaryFrame(arrayBuffer) {
+        try {
+          frameCounter++;
+          updateFPS();
+
+          // Create blob and load as image
+          const blob = new Blob([arrayBuffer], { type: "image/jpeg" });
+          const img = new Image();
+
+          img.onload = function () {
+            // Auto-resize canvas if needed
+            if (img.width !== canvasWidth || img.height !== canvasHeight) {
+              canvasWidth = img.width;
+              canvasHeight = img.height;
+              canvas.width = canvasWidth;
+              canvas.height = canvasHeight;
+              console.log(
+                `📐 Canvas resized to ${canvasWidth}x${canvasHeight}`
+              );
+            }
+
+            // Draw frame to canvas
+            ctx.clearRect(0, 0, canvasWidth, canvasHeight);
+            ctx.drawImage(img, 0, 0);
+
+            updateInfoPanel();
+
+            // Cleanup
+            URL.revokeObjectURL(img.src);
+          };
+
+          img.onerror = function () {
+            console.warn("⚠️ Failed to load frame image");
+            errorCounter++;
+            updateInfoPanel();
+          };
+
+          // Create object URL for image
+          img.src = URL.createObjectURL(blob);
+        } catch (error) {
+          console.error("❌ Frame processing error:", error);
+          errorCounter++;
+          updateInfoPanel();
+        }
+      }
+
+      // Handle WebSocket disconnection
+      function handleDisconnection() {
+        isConnected = false;
+        hideInfoPanel();
+
+        if (reconnectCount < maxReconnects) {
+          reconnectCount++;
+          const delay = Math.min(reconnectDelay * reconnectCount, 10000);
+
+          showStatus(
+            `Reconnecting... (${reconnectCount}/${maxReconnects})`,
+            "connecting"
+          );
+          showLoadingOverlay(
+            `Reconnecting in ${
+              delay / 1000
+            }s... (${reconnectCount}/${maxReconnects})`
+          );
+
+          setTimeout(() => {
+            if (!isConnected) {
+              connectWebSocket();
+            }
+          }, delay);
+        } else {
+          showStatus("Connection Failed", "error");
+          showError(
+            "Max reconnection attempts reached. Please refresh the page."
+          );
+        }
+      }
+
+      // FPS calculation
+      function updateFPS() {
+        const now = performance.now();
+        if (lastFrameTime > 0) {
+          const frameDelta = now - lastFrameTime;
+          const fps = 1000 / frameDelta;
+
+          fpsHistory.push(fps);
+          if (fpsHistory.length > 10) {
+            fpsHistory.shift();
+          }
+
+          // Calculate average FPS
+          currentFPS = Math.round(
+            fpsHistory.reduce((a, b) => a + b, 0) / fpsHistory.length
+          );
+
+          if (fpsCounter) {
+            fpsCounter.textContent = `FPS: ${currentFPS}`;
+          }
+        }
+        lastFrameTime = now;
+      }
+
+      // UI helper functions
+      function showLoadingOverlay(message = "Loading...") {
+        if (loadingText) loadingText.textContent = message;
+        if (loadingOverlay) loadingOverlay.style.display = "flex";
+      }
+
+      function hideLoadingOverlay() {
+        if (loadingOverlay) loadingOverlay.style.display = "none";
+      }
+
+      function showStatus(message, type = "connecting") {
+        if (status) {
+          status.textContent = message;
+          status.className = `status ${type}`;
+        }
+      }
+
+      function showInfoPanel() {
+        if (fpsCounter) fpsCounter.style.display = "block";
+        if (infoPanel) infoPanel.style.display = "block";
+      }
+
+      function hideInfoPanel() {
+        if (fpsCounter) fpsCounter.style.display = "none";
+        if (infoPanel) infoPanel.style.display = "none";
+      }
+
+      function updateInfoPanel() {
+        if (frameCount) frameCount.textContent = frameCounter;
+        if (errorCount) errorCount.textContent = errorCounter;
+        if (frameSize) frameSize.textContent = `${canvasWidth}x${canvasHeight}`;
+      }
+
+      function showError(message) {
+        clearErrorMessage();
+        const errorDiv = document.createElement("div");
+        errorDiv.className = "error-message";
+        errorDiv.textContent = message;
+        document.body.appendChild(errorDiv);
+
+        // Auto-hide after 8 seconds
+        setTimeout(() => {
+          if (errorDiv.parentNode) {
+            errorDiv.parentNode.removeChild(errorDiv);
+          }
+        }, 8000);
+      }
+
+      function clearErrorMessage() {
+        const existing = document.querySelector(".error-message");
+        if (existing) {
+          existing.remove();
+        }
+      }
+
+      // Handle page visibility changes
+      document.addEventListener("visibilitychange", function () {
+        if (document.hidden) {
+          console.log("📱 Page hidden");
+        } else {
+          console.log("📱 Page visible");
+          if (!isConnected) {
+            console.log("🔄 Reconnecting after page focus");
+            connectWebSocket();
+          }
+        }
+      });
+
+      // Handle window resize
+      window.addEventListener("resize", function () {
+        console.log("📐 Window resized");
+        // Canvas will auto-resize based on incoming frames
+      });
+
+      // Keyboard shortcuts
+      document.addEventListener("keydown", function (event) {
+        if (event.key === "r" && event.ctrlKey) {
+          event.preventDefault();
+          console.log("🔄 Manual refresh requested");
+          location.reload();
+        }
+
+        if (event.key === "i" && event.ctrlKey) {
+          event.preventDefault();
+          console.log("📊 Toggle info panel");
+          const isVisible = infoPanel.style.display === "block";
+          infoPanel.style.display = isVisible ? "none" : "block";
+          fpsCounter.style.display = isVisible ? "none" : "block";
+        }
+      });
+
+      // Cleanup on page unload
+      window.addEventListener("beforeunload", function () {
+        if (websocket) {
+          websocket.close();
+        }
+      });
+
+      // Initialize the application
+      console.log("🚀 Initializing WebSocket Live Browser Stream");
+      initializeCanvas();
+      showLoadingOverlay("Connecting to WebSocket stream...");
+
+      // Start connection after a brief delay to ensure DOM is ready
+      setTimeout(() => {
+        connectWebSocket();
+      }, 100);
+    </script>
+  </body>
+</html>

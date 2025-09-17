@@ -1,0 +1,728 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>WebSocket Live Browser Stream</title>
+    <style>
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+
+      body {
+        background: linear-gradient(135deg, #1e3c72, #2a5298);
+        color: #fff;
+        font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+        height: 100vh;
+        overflow: hidden;
+        display: flex;
+        flex-direction: column;
+      }
+
+      .header {
+        background: rgba(0, 0, 0, 0.3);
+        padding: 10px 20px;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        backdrop-filter: blur(10px);
+        box-shadow: 0 2px 10px rgba(0, 0, 0, 0.3);
+      }
+
+      .title {
+        font-size: 18px;
+        font-weight: 600;
+      }
+
+      .controls {
+        display: flex;
+        gap: 10px;
+        align-items: center;
+      }
+
+      .status {
+        padding: 5px 12px;
+        border-radius: 20px;
+        font-size: 12px;
+        font-weight: 500;
+        text-transform: uppercase;
+        letter-spacing: 1px;
+      }
+
+      .status.connected {
+        background: rgba(76, 175, 80, 0.2);
+        color: #4caf50;
+        border: 1px solid #4caf50;
+      }
+
+      .status.connecting {
+        background: rgba(255, 152, 0, 0.2);
+        color: #ff9800;
+        border: 1px solid #ff9800;
+        animation: pulse 1.5s infinite;
+      }
+
+      .status.error {
+        background: rgba(244, 67, 54, 0.2);
+        color: #f44336;
+        border: 1px solid #f44336;
+      }
+
+      @keyframes pulse {
+        0% {
+          opacity: 0.6;
+        }
+        50% {
+          opacity: 1;
+        }
+        100% {
+          opacity: 0.6;
+        }
+      }
+
+      .main-container {
+        flex: 1;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        padding: 20px;
+        position: relative;
+      }
+
+      .browser-viewport {
+        position: relative;
+        max-width: 100%;
+        max-height: 100%;
+        border: 2px solid rgba(255, 255, 255, 0.1);
+        border-radius: 8px;
+        background: #000;
+        box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+        overflow: hidden;
+      }
+
+      #browserCanvas {
+        max-width: 100%;
+        max-height: 100%;
+        display: block;
+        cursor: pointer;
+      }
+
+      .loading-overlay {
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        background: rgba(0, 0, 0, 0.9);
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        align-items: center;
+        color: #fff;
+        z-index: 1000;
+      }
+
+      .spinner {
+        width: 40px;
+        height: 40px;
+        border: 3px solid rgba(255, 255, 255, 0.3);
+        border-top: 3px solid #fff;
+        border-radius: 50%;
+        animation: spin 1s linear infinite;
+        margin-bottom: 20px;
+      }
+
+      @keyframes spin {
+        0% {
+          transform: rotate(0deg);
+        }
+        100% {
+          transform: rotate(360deg);
+        }
+      }
+
+      .loading-text {
+        font-size: 16px;
+        margin-bottom: 10px;
+      }
+
+      .session-info {
+        font-size: 12px;
+        color: rgba(255, 255, 255, 0.7);
+      }
+
+      .fps-counter {
+        position: absolute;
+        bottom: 10px;
+        right: 10px;
+        background: rgba(0, 0, 0, 0.7);
+        padding: 4px 8px;
+        border-radius: 4px;
+        font-size: 11px;
+        color: #4caf50;
+        font-family: "Courier New", monospace;
+      }
+
+      .reconnect-btn {
+        background: #4caf50;
+        color: white;
+        border: none;
+        padding: 8px 16px;
+        border-radius: 4px;
+        cursor: pointer;
+        font-size: 12px;
+        transition: background 0.3s;
+      }
+
+      .reconnect-btn:hover {
+        background: #45a049;
+      }
+
+      .reconnect-btn:disabled {
+        background: #666;
+        cursor: not-allowed;
+      }
+
+      .error-message {
+        position: fixed;
+        bottom: 20px;
+        left: 50%;
+        transform: translateX(-50%);
+        background: rgba(244, 67, 54, 0.9);
+        color: white;
+        padding: 12px 20px;
+        border-radius: 6px;
+        max-width: 80%;
+        text-align: center;
+        z-index: 2000;
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+      }
+
+      .stats {
+        font-size: 11px;
+        color: rgba(255, 255, 255, 0.6);
+      }
+    </style>
+  </head>
+  <body>
+    <div class="header">
+      <div class="title">🌐 Live Browser Automation</div>
+      <div class="controls">
+        <div id="stats" class="stats"></div>
+        <div id="status" class="status connecting">Connecting</div>
+        <button
+          id="reconnectBtn"
+          class="reconnect-btn"
+          onclick="manualReconnect()"
+        >
+          Reconnect
+        </button>
+      </div>
+    </div>
+
+    <div class="main-container">
+      <div class="browser-viewport">
+        <canvas id="browserCanvas" width="1920" height="1080"></canvas>
+        <div id="loadingOverlay" class="loading-overlay">
+          <div class="spinner"></div>
+          <div class="loading-text">Connecting to browser...</div>
+          <div id="sessionInfo" class="session-info"></div>
+        </div>
+        <div id="fpsCounter" class="fps-counter" style="display: none">
+          FPS: 0
+        </div>
+      </div>
+    </div>
+
+    <script>
+      // Global state
+      let ws = null;
+      let canvas = null;
+      let ctx = null;
+      let isConnected = false;
+      let reconnectAttempts = 0;
+      let maxReconnectAttempts = 10;
+      let reconnectDelay = 1000;
+      let frameCount = 0;
+      let lastFpsUpdate = Date.now();
+      let currentFps = 0;
+
+      // Get session ID from URL
+      function getSessionId() {
+        const path = window.location.pathname;
+        const match = path.match(/\/([^\/]+)$/);
+        if (match) {
+          return match[1];
+        }
+        return (
+          new URLSearchParams(window.location.search).get("sessionId") ||
+          "default-session"
+        );
+      }
+
+      const sessionId = getSessionId();
+      console.log("🔗 Session ID:", sessionId);
+
+      // DOM elements
+      const statusEl = document.getElementById("status");
+      const statsEl = document.getElementById("stats");
+      const loadingOverlay = document.getElementById("loadingOverlay");
+      const sessionInfo = document.getElementById("sessionInfo");
+      const fpsCounter = document.getElementById("fpsCounter");
+      const reconnectBtn = document.getElementById("reconnectBtn");
+
+      function initCanvas() {
+        canvas = document.getElementById("browserCanvas");
+        ctx = canvas.getContext("2d");
+
+        // Clear canvas with dark background
+        ctx.fillStyle = "#1a1a1a";
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        // Add centered text
+        ctx.fillStyle = "#888";
+        ctx.font = "24px Arial";
+        ctx.textAlign = "center";
+        ctx.fillText(
+          "Initializing browser connection...",
+          canvas.width / 2,
+          canvas.height / 2
+        );
+
+        // Make canvas focusable for keyboard events
+        canvas.tabIndex = 0;
+        canvas.style.outline = "none"; // Remove focus outline
+
+        // Add click handler for browser interaction
+        canvas.addEventListener("click", handleCanvasClick);
+
+        // Focus canvas initially for keyboard events
+        canvas.addEventListener("click", function () {
+          canvas.focus();
+        });
+
+        // Add keyboard event handlers for typing and key presses (like old working code)
+        canvas.addEventListener("keydown", handleKeyDown);
+        canvas.addEventListener("keypress", handleKeyPress);
+
+        // Add scroll event handler for mouse wheel (like old working code)
+        canvas.addEventListener("wheel", handleCanvasWheel);
+
+        // Prevent context menu on canvas
+        canvas.addEventListener("contextmenu", (e) => e.preventDefault());
+
+        // Focus canvas on page load
+        setTimeout(() => {
+          canvas.focus();
+        }, 1000);
+      }
+
+      function handleCanvasClick(event) {
+        if (!isConnected || !ws) return;
+
+        const rect = canvas.getBoundingClientRect();
+        const scaleX = canvas.width / rect.width;
+        const scaleY = canvas.height / rect.height;
+
+        const x = Math.round((event.clientX - rect.left) * scaleX);
+        const y = Math.round((event.clientY - rect.top) * scaleY);
+
+        const clickData = {
+          type: "click",
+          x: x,
+          y: y,
+        };
+
+        console.log("👆 Sending click:", clickData);
+        ws.send(JSON.stringify(clickData));
+      }
+
+      // Handle keyboard key presses for special keys (like old working code)
+      function handleKeyDown(event) {
+        if (!isConnected || !ws) return;
+
+        // Only handle special keys, let keypress handle text input
+        const specialKeys = [
+          "Enter",
+          "Tab",
+          "Escape",
+          "Backspace",
+          "Delete",
+          "ArrowUp",
+          "ArrowDown",
+          "ArrowLeft",
+          "ArrowRight",
+          "Home",
+          "End",
+          "PageUp",
+          "PageDown",
+          "Insert",
+        ];
+
+        if (specialKeys.includes(event.key)) {
+          event.preventDefault(); // Prevent browser default behavior
+
+          const keyData = {
+            type: "key",
+            key: event.key,
+          };
+
+          console.log("⌨️ Sending key press:", keyData);
+          ws.send(JSON.stringify(keyData));
+        }
+      }
+
+      // Handle text input from keyboard (like old working code)
+      function handleKeyPress(event) {
+        if (!isConnected || !ws) return;
+
+        // Handle printable characters
+        if (event.key.length === 1) {
+          event.preventDefault(); // Prevent browser default behavior
+
+          const typeData = {
+            type: "type",
+            text: event.key,
+          };
+
+          console.log("� Sending text input:", typeData);
+          ws.send(JSON.stringify(typeData));
+        }
+      }
+
+      // Handle mouse wheel scrolling (like old working code)
+      function handleCanvasWheel(event) {
+        if (!isConnected || !ws) return;
+
+        event.preventDefault(); // Prevent browser scrolling
+
+        const scrollData = {
+          type: "scroll",
+          deltaX: event.deltaX,
+          deltaY: event.deltaY,
+        };
+
+        console.log("📜 Sending scroll:", scrollData);
+        ws.send(JSON.stringify(scrollData));
+      }
+
+      function updateStatus(message, type = "connecting") {
+        statusEl.textContent = message;
+        statusEl.className = `status ${type}`;
+        console.log(`📊 Status [${type}]:`, message);
+      }
+
+      function updateStats(stats) {
+        if (statsEl) {
+          const interactionStatus =
+            canvas && document.activeElement === canvas
+              ? "🎯 Active"
+              : "⏸️ Inactive";
+          statsEl.textContent = `Reconnects: ${reconnectAttempts} | FPS: ${currentFps} | Interactions: ${interactionStatus}`;
+        }
+      }
+
+      function updateFps() {
+        const now = Date.now();
+        const timeDiff = now - lastFpsUpdate;
+
+        if (timeDiff >= 1000) {
+          currentFps = Math.round((frameCount * 1000) / timeDiff);
+          frameCount = 0;
+          lastFpsUpdate = now;
+
+          if (fpsCounter) {
+            fpsCounter.textContent = `FPS: ${currentFps}`;
+            fpsCounter.style.display = currentFps > 0 ? "block" : "none";
+          }
+
+          updateStats();
+        }
+      }
+
+      function connectWebSocket() {
+        if (
+          ws &&
+          (ws.readyState === WebSocket.CONNECTING ||
+            ws.readyState === WebSocket.OPEN)
+        ) {
+          console.log("⚠️ WebSocket already connecting or connected");
+          return;
+        }
+
+        const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+        const wsUrl = `${protocol}//${window.location.host}/api/v1/browser_use/browser/ws/${sessionId}`;
+
+        console.log("🔌 Connecting to WebSocket:", wsUrl);
+        updateStatus("Connecting...", "connecting");
+
+        if (sessionInfo) {
+          sessionInfo.textContent = `Session: ${sessionId}`;
+        }
+
+        try {
+          ws = new WebSocket(wsUrl);
+          ws.binaryType = "arraybuffer";
+
+          ws.onopen = function (event) {
+            console.log("✅ WebSocket connected");
+            updateStatus("Connected", "connected");
+            isConnected = true;
+            reconnectAttempts = 0;
+            reconnectDelay = 1000;
+            hideLoadingOverlay();
+
+            if (reconnectBtn) {
+              reconnectBtn.disabled = false;
+            }
+          };
+
+          ws.onmessage = function (event) {
+            if (event.data instanceof ArrayBuffer) {
+              // Binary screenshot data
+              frameCount++;
+              updateFps();
+
+              const blob = new Blob([event.data], { type: "image/png" });
+              const img = new Image();
+
+              img.onload = function () {
+                if (canvas && ctx) {
+                  // Scale to fit canvas maintaining aspect ratio
+                  const scaleX = canvas.width / img.width;
+                  const scaleY = canvas.height / img.height;
+                  const scale = Math.min(scaleX, scaleY);
+
+                  const newWidth = img.width * scale;
+                  const newHeight = img.height * scale;
+                  const x = (canvas.width - newWidth) / 2;
+                  const y = (canvas.height - newHeight) / 2;
+
+                  // Clear and draw
+                  ctx.fillStyle = "#000";
+                  ctx.fillRect(0, 0, canvas.width, canvas.height);
+                  ctx.drawImage(img, x, y, newWidth, newHeight);
+                }
+                URL.revokeObjectURL(img.src);
+              };
+
+              img.onerror = function () {
+                console.warn("⚠️ Failed to load image frame");
+                URL.revokeObjectURL(img.src);
+              };
+
+              img.src = URL.createObjectURL(blob);
+            } else if (typeof event.data === "string") {
+              // JSON message
+              try {
+                const message = JSON.parse(event.data);
+                console.log("📨 Received:", message);
+
+                if (message.type === "status") {
+                  updateStatus(message.message || "Connected", "connected");
+                } else if (message.type === "error") {
+                  updateStatus(message.message || "Error", "error");
+                  showError(message.message || "Unknown error occurred");
+                }
+              } catch (e) {
+                console.log("📄 Raw message:", event.data);
+              }
+            }
+          };
+
+          ws.onerror = function (error) {
+            console.error("❌ WebSocket error:", error);
+            updateStatus("Connection Error", "error");
+          };
+
+          ws.onclose = function (event) {
+            console.log(`🔌 WebSocket closed: ${event.code} - ${event.reason}`);
+            isConnected = false;
+            frameCount = 0;
+            currentFps = 0;
+
+            if (fpsCounter) {
+              fpsCounter.style.display = "none";
+            }
+
+            if (event.code === 1000) {
+              updateStatus("Disconnected", "error");
+            } else if (event.code === 1006) {
+              updateStatus("Connection Lost", "error");
+              showLoadingOverlay("Connection lost - reconnecting...");
+              attemptReconnect();
+            } else if (event.code === 1002) {
+              updateStatus("Session Not Found", "error");
+              showError(
+                `Session ${sessionId} not found. Browser may still be starting.`
+              );
+              attemptReconnect();
+            } else {
+              updateStatus(`Disconnected (${event.code})`, "error");
+              attemptReconnect();
+            }
+          };
+        } catch (error) {
+          console.error("❌ Failed to create WebSocket:", error);
+          updateStatus("Connection Failed", "error");
+          showError("Failed to create WebSocket connection");
+          attemptReconnect();
+        }
+      }
+
+      function attemptReconnect() {
+        if (reconnectAttempts >= maxReconnectAttempts) {
+          updateStatus("Connection Failed", "error");
+          showError(
+            `Failed to connect after ${maxReconnectAttempts} attempts. Please refresh the page.`
+          );
+          if (reconnectBtn) {
+            reconnectBtn.disabled = false;
+          }
+          return;
+        }
+
+        reconnectAttempts++;
+        const delay = Math.min(
+          reconnectDelay * Math.pow(1.5, reconnectAttempts - 1),
+          15000
+        );
+
+        updateStatus(
+          `Reconnecting... (${reconnectAttempts}/${maxReconnectAttempts})`,
+          "connecting"
+        );
+
+        if (reconnectBtn) {
+          reconnectBtn.disabled = true;
+        }
+
+        setTimeout(() => {
+          if (!isConnected) {
+            console.log(
+              `🔄 Reconnection attempt ${reconnectAttempts}/${maxReconnectAttempts}`
+            );
+            connectWebSocket();
+          }
+        }, delay);
+      }
+
+      function manualReconnect() {
+        console.log("🔄 Manual reconnect triggered");
+        if (ws) {
+          ws.close(1000, "Manual reconnect");
+          ws = null;
+        }
+        reconnectAttempts = 0;
+        reconnectDelay = 1000;
+        showLoadingOverlay("Reconnecting...");
+        setTimeout(connectWebSocket, 1000);
+      }
+
+      function showLoadingOverlay(message = "Loading...") {
+        if (loadingOverlay) {
+          loadingOverlay.style.display = "flex";
+          const textEl = loadingOverlay.querySelector(".loading-text");
+          if (textEl) {
+            textEl.textContent = message;
+          }
+        }
+      }
+
+      function hideLoadingOverlay() {
+        if (loadingOverlay) {
+          loadingOverlay.style.display = "none";
+        }
+      }
+
+      function showError(message) {
+        clearError();
+        const errorDiv = document.createElement("div");
+        errorDiv.className = "error-message";
+        errorDiv.textContent = message;
+        document.body.appendChild(errorDiv);
+
+        setTimeout(() => {
+          clearError();
+        }, 5000);
+      }
+
+      function clearError() {
+        const existing = document.querySelector(".error-message");
+        if (existing) {
+          existing.remove();
+        }
+      }
+
+      function disconnect() {
+        if (ws) {
+          ws.close(1000, "User disconnect");
+          ws = null;
+        }
+      }
+
+      // Initialize application
+      window.onload = function () {
+        console.log("🚀 Initializing WebSocket Browser Viewer");
+        initCanvas();
+        showLoadingOverlay(`Connecting to session ${sessionId}...`);
+
+        // Give the session a moment to initialize
+        setTimeout(connectWebSocket, 1000);
+      };
+
+      // Cleanup on page unload
+      window.onbeforeunload = function () {
+        disconnect();
+      };
+
+      // Handle visibility changes
+      document.addEventListener("visibilitychange", function () {
+        if (document.hidden) {
+          console.log("📱 Page hidden");
+        } else {
+          console.log("📱 Page visible");
+          if (!isConnected) {
+            console.log("🔄 Reconnecting after page focus");
+            connectWebSocket();
+          }
+        }
+      });
+
+      // Keyboard shortcuts (only for browser control, not interfering with user interactions)
+      document.addEventListener("keydown", function (event) {
+        // Only handle shortcuts when canvas is NOT focused - avoid interfering with user interactions
+        if (event.target === canvas) {
+          return; // Let user interaction handlers deal with this
+        }
+
+        if (event.key === "r" && event.ctrlKey) {
+          event.preventDefault();
+          location.reload();
+        } else if (event.key === "Escape" && event.ctrlKey) {
+          // Only ctrl+escape for manual reconnect to avoid conflicts
+          event.preventDefault();
+          manualReconnect();
+        } else if (event.key === "f" && event.ctrlKey) {
+          // Focus canvas for user interaction
+          event.preventDefault();
+          if (canvas) {
+            canvas.focus();
+            console.log("🎯 Canvas focused for user interaction");
+          }
+        }
+      });
+
+      // Expose for debugging
+      window.browserViewer = {
+        connect: connectWebSocket,
+        disconnect: disconnect,
+        reconnect: manualReconnect,
+        getSessionId: () => sessionId,
+        getStatus: () => ({ isConnected, reconnectAttempts, currentFps }),
+      };
+    </script>
+  </body>
+</html>

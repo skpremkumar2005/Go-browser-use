@@ -21,6 +21,14 @@ func (r *Routes) Setup(g *echo.Group) {
 
 func (h *handler) Route(g *echo.Group) {
 	// Browser Session Management
+
+
+	//MAIN APIS
+
+	g.POST("/execute", h.ExecuteTaskAndStream)
+
+
+	
 	g.POST("/sessions", h.CreateBrowserSession, CreateBrowserSessionValidation)
 	g.GET("/sessions/:sessionId", h.GetBrowserSession, ValidateSessionID)
 	g.GET("/sessions", h.ListBrowserSessions)
@@ -39,6 +47,7 @@ func (h *handler) Route(g *echo.Group) {
 
 	// WebSocket and Streaming
 	g.GET("/ws/:sessionId", h.HandleWebSocket, ValidateSessionID)
+	g.GET("/websocket-stream/:sessionId", h.HandleWebSocket, ValidateSessionID) // New WebSocket streaming endpoint
 	g.GET("/stream/:sessionId", h.StartStreamingSession, ValidateSessionID)
 	g.DELETE("/stream/:sessionId", h.StopStreamingSession, ValidateSessionID)
 	g.POST("/stream/:sessionId/reset", h.ResetStreamingSession, ValidateSessionID)
@@ -47,7 +56,7 @@ func (h *handler) Route(g *echo.Group) {
 	g.GET("/stream-screencast/:sessionId", h.StreamScreencast, ValidateSessionID)
        
 	// Execute endpoint (same as old code) - creates task and immediately streams
-	g.POST("/execute", h.ExecuteTaskAndStream)
+
 
 	// Recovery endpoint - helps frontend recover from lost sessions
 	g.POST("/recover/:sessionId", h.RecoverSession, ValidateSessionID)

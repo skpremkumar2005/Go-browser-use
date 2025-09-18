@@ -179,6 +179,15 @@ func ExecuteScriptTask(sessionID, task string, maxSteps int) {
 		return
 	}
 
+	// Store the process reference in the session so it can be stopped later
+	scriptSessionManager.mutex.Lock()
+	session.Process = cmd
+	session.Status = "running"
+	session.UpdatedAt = time.Now()
+	scriptSessionManager.mutex.Unlock()
+
+	log.Printf("✅ Python script started successfully, PID: %d", cmd.Process.Pid)
+
 	var outputBuffer strings.Builder
 	var wg sync.WaitGroup
 	
@@ -237,6 +246,9 @@ func ExecuteScriptTask(sessionID, task string, maxSteps int) {
 		session.Status = "failed"
 		session.Metadata["error"] = fmt.Sprintf("Script failed: %v\nOutput: %s", err, string(output))
 		session.UpdatedAt = time.Now()
+		now := time.Now()
+		session.FinishedAt = &now
+		session.Process = nil // Clear process reference since execution failed
 		scriptSessionManager.mutex.Unlock()
 		return
 	}
@@ -349,16 +361,18 @@ func ExecuteScriptTask(sessionID, task string, maxSteps int) {
 		session.Output = "Task execution failed"
 	}
 	
-	// Set finished time
+	// Set finished time and clear process reference
 	now := time.Now()
 	session.FinishedAt = &now
 	session.UpdatedAt = now
+	session.Process = nil // Clear process reference since execution is complete
 	scriptSessionManager.mutex.Unlock()
 
 	browserSession = browserManager.GetSession(session.BrowserID)
 	if browserSession != nil {
 		browserSession.mutex.Lock()
 		browserSession.TaskCompleted = true
+		browserSession.Status = "ready"  // Reset to ready so it can be reused
 		browserSession.LastUserInteraction = time.Now()
 		browserSession.mutex.Unlock()
 

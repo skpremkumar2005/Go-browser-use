@@ -18,6 +18,7 @@ func SetupRoutes(router *mux.Router) {
 	api.HandleFunc("/browser_use/execute", CreateScriptTaskHandler).Methods("POST")
 	api.HandleFunc("/browser_use/result/{taskId}", GetTaskResultHandler).Methods("GET")
 	api.HandleFunc("/browser_use/status/{taskId}", GetTaskStatusHandler).Methods("GET")
+	api.HandleFunc("/browser_use/stop/{taskId}", StopTaskHandler).Methods("POST")
 	api.HandleFunc("/task/{sessionId}", GetScriptTaskHandler).Methods("GET")
 	api.HandleFunc("/task/{sessionId}/cancel", CancelScriptTaskHandler).Methods("POST")
 	api.HandleFunc("/sessions", ListScriptSessionsHandler).Methods("GET")

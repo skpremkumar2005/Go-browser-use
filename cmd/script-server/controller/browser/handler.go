@@ -46,16 +46,21 @@ func CreateScriptTaskHandler(w http.ResponseWriter, r *http.Request) {
 		log.Printf("🔄 Attempting to reuse browser session: %s", req.SessionID)
 		browserSession = GetBrowserManager().GetSession(req.SessionID)
 		
-		if browserSession != nil && browserSession.Status == "ready" {
-			log.Printf("✅ Reusing existing browser session: %s", req.SessionID)
-			sessionReused = true
-			taskID = req.SessionID // Use session ID as task ID for consistency
-			
-			// Cancel any existing cleanup timer
-			GetBrowserManager().cancelCleanupTimer(req.SessionID)
+		if browserSession != nil {
+			log.Printf("📊 Found browser session %s with status: %s", req.SessionID, browserSession.Status)
+			if browserSession.Status == "ready" {
+				log.Printf("✅ Reusing existing browser session: %s", req.SessionID)
+				sessionReused = true
+				taskID = req.SessionID // Use session ID as task ID for consistency
+				
+				// Cancel any existing cleanup timer
+				GetBrowserManager().cancelCleanupTimer(req.SessionID)
+			} else {
+				log.Printf("⚠️ Browser session %s status is '%s', not 'ready' - cannot reuse", req.SessionID, browserSession.Status)
+				browserSession = nil
+			}
 		} else {
-			log.Printf("⚠️ Requested session %s not available, creating new session", req.SessionID)
-			browserSession = nil
+			log.Printf("⚠️ Browser session %s not found", req.SessionID)
 		}
 	}
 
@@ -1208,4 +1213,82 @@ func GetTaskStatusHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(response)
+}
+
+// StopTaskHandler stops a running task while keeping the browser session alive
+func StopTaskHandler(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	taskID := vars["taskId"]
+
+	log.Printf("🛑 Stop request received for task ID: %s", taskID)
+
+	GetScriptSessionManager().mutex.Lock()
+	session := GetScriptSessionManager().sessions[taskID]
+	if session == nil {
+		GetScriptSessionManager().mutex.Unlock()
+		log.Printf("❌ Task not found: %s", taskID)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Task not found"})
+		return
+	}
+
+	log.Printf("📊 Current task status: %s", session.Status)
+
+	// Stop the task but keep browser session alive
+	if session.Status == "running" || session.Status == "pending" {
+		session.Status = "stopped"
+		session.UpdatedAt = time.Now()
+		now := time.Now()
+		session.FinishedAt = &now
+		
+		// If there's a process running, kill it
+		if session.Process != nil {
+			log.Printf("🔪 Killing process with PID: %d", session.Process.Process.Pid)
+			// Check if process is still running
+			if session.Process.ProcessState == nil || !session.Process.ProcessState.Exited() {
+				err := session.Process.Process.Kill()
+				if err != nil {
+					log.Printf("⚠️ Error killing process: %v", err)
+				} else {
+					log.Printf("✅ Process killed successfully")
+				}
+			} else {
+				log.Printf("ℹ️ Process already exited")
+			}
+			// Clear the process reference
+			session.Process = nil
+		} else {
+			log.Printf("⚠️ No process found to kill (task may have already completed)")
+		}
+		
+		log.Printf("✅ Task stopped successfully: %s", taskID)
+	} else {
+		log.Printf("ℹ️ Task %s is already in status: %s", taskID, session.Status)
+	}
+	GetScriptSessionManager().mutex.Unlock()
+
+	// Also reset the browser session to "ready" state so it can be reused
+	if session.BrowserID != "" {
+		browserSession := GetBrowserManager().GetSession(session.BrowserID)
+		if browserSession != nil {
+			browserSession.mutex.Lock()
+			browserSession.Status = "ready"
+			browserSession.TaskCompleted = false  // Reset task completed flag
+			browserSession.LastActivity = time.Now()
+			browserSession.mutex.Unlock()
+			
+			// Cancel cleanup timer to prevent auto-deletion
+			GetBrowserManager().cancelCleanupTimer(session.BrowserID)
+			log.Printf("✅ Browser session %s reset to ready state for reuse", session.BrowserID)
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"status": "stopped",
+		"message": "Task stopped successfully. Browser session remains active.",
+		"task_id": taskID,
+	})
 }

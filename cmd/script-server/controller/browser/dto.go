@@ -103,13 +103,31 @@ type ScriptSession struct {
 	CDPEndpoint string                 `json:"cdpEndpoint,omitempty"`
 	CreatedAt   time.Time              `json:"createdAt"`
 	UpdatedAt   time.Time              `json:"updatedAt"`
+	FinishedAt  *time.Time             `json:"finishedAt,omitempty"`
 	Metadata    map[string]interface{} `json:"metadata,omitempty"`
 	Process     *exec.Cmd              `json:"-"`
+	// Execution tracking
+	Steps       []TaskStepDetail `json:"steps,omitempty"`
+	Logs        []LogEntry       `json:"logs,omitempty"`
+	TokenUsage  *TokenUsageDetail `json:"tokenUsage,omitempty"`
+	Summary     string           `json:"summary,omitempty"`
+	Output      string           `json:"output,omitempty"`
 }
 
 type ScriptTaskRequest struct {
-	Task     string `json:"task"`
-	MaxSteps int    `json:"maxSteps,omitempty"`
+	Task      string    `json:"task"`
+	MaxSteps  int       `json:"maxSteps,omitempty"`
+	SessionID string    `json:"sessionId,omitempty"` // Optional: reuse existing browser session
+	LLMModel  *LLMModel `json:"llm_model,omitempty"`
+}
+
+type LLMModel struct {
+	APIKey     string `json:"apiKey"`
+	Provider   string `json:"provider"`
+	Endpoint   string `json:"endpoint"`
+	Deployment string `json:"deployment"`
+	LLMModel   string `json:"llmModel"`
+	Version    string `json:"version,omitempty"`
 }
 
 // Enhanced Response Structures
@@ -130,6 +148,85 @@ type EnhancedTaskResponse struct {
 	Result        *TaskResult  `json:"result,omitempty"`
 	Message       string       `json:"message"`
 	Error         *ErrorInfo   `json:"error,omitempty"`
+}
+
+// Simplified Response Structure as requested
+type SimpleTaskResponse struct {
+	Success       bool   `json:"success"`
+	ID            string `json:"id"`
+	SessionID     string `json:"sessionId"`
+	SessionReused bool   `json:"session_reused"`
+	LiveURL       string `json:"live_url"`
+	SocketURL     string `json:"socket_url"`
+}
+
+// Result API Response Structure
+type TaskResultResponse struct {
+	ID                string           `json:"id"`
+	Task              string           `json:"task"`
+	LiveURL           string           `json:"live_url"`
+	Output            string           `json:"output"`
+	Status            string           `json:"status"`
+	CreatedAt         string           `json:"created_at"`
+	FinishedAt        *string          `json:"finished_at,omitempty"`
+	Steps             []TaskStepDetail `json:"steps"`
+	BrowserData       BrowserData      `json:"browser_data"`
+	UserUploadedFiles []string         `json:"user_uploaded_files"`
+	OutputFiles       []string         `json:"output_files"`
+	PublicShareURL    string           `json:"public_share_url"`
+	TokenUsage        *TokenUsageDetail `json:"token_usage,omitempty"`
+	Summary           string           `json:"summary"`
+	Metadata          TaskMetadata     `json:"metadata"`
+}
+
+// Status API Response Structure
+type TaskStatusResponse struct {
+	Status string `json:"status"`
+}
+
+// Supporting structures for the result API
+type TaskStepDetail struct {
+	ID                     string `json:"id"`
+	Step                   int    `json:"step"`
+	EvaluationPreviousGoal string `json:"evaluation_previous_goal"`
+	NextGoal               string `json:"next_goal"`
+	URL                    string `json:"url"`
+}
+
+type BrowserData struct {
+	Cookies []interface{} `json:"cookies"`
+}
+
+type TokenUsageDetail struct {
+	TotalTokens      int     `json:"total_tokens"`
+	PromptTokens     int     `json:"prompt_tokens"`
+	CompletionTokens int     `json:"completion_tokens"`
+	TotalCost        float64 `json:"total_cost"`
+	Model            string  `json:"model"`
+}
+
+type TaskMetadata struct {
+	SessionID     string      `json:"sessionId"`
+	Duration      int64       `json:"duration"`
+	DurationHuman string      `json:"durationHuman"`
+	Logs          []LogEntry  `json:"logs"`
+	LogsSummary   LogsSummary `json:"logsSummary"`
+}
+
+type LogEntry struct {
+	Timestamp string      `json:"timestamp"`
+	Level     string      `json:"level"`
+	Type      string      `json:"type"`
+	Message   string      `json:"message"`
+	Step      interface{} `json:"step"`
+	Action    interface{} `json:"action"`
+}
+
+type LogsSummary struct {
+	TotalActions   int `json:"totalActions"`
+	BrowserActions int `json:"browserActions"`
+	Steps          int `json:"steps"`
+	Errors         int `json:"errors"`
 }
 
 type BrowserInfo struct {

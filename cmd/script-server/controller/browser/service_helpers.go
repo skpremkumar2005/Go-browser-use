@@ -54,6 +54,28 @@ func CreateEnhancedTaskResponse(session *ScriptSession, browserSession *BrowserS
 	return response
 }
 
+func CreateSimpleTaskResponse(session *ScriptSession, browserSession *BrowserSession, r *http.Request, sessionReused bool) *SimpleTaskResponse {
+	baseURL := generateBaseURL(r)
+
+	// Use the same ID for both task and session - they're the same!
+	taskAndSessionID := session.ID
+
+	// Generate URLs using the same ID
+	liveURL := fmt.Sprintf("%s/api/live-automation/%s", baseURL, taskAndSessionID)
+	socketURL := fmt.Sprintf("%s/api/stream-screencast/%s", baseURL, taskAndSessionID)
+
+	response := &SimpleTaskResponse{
+		Success:       true,
+		ID:            taskAndSessionID,    // Task ID = Session ID
+		SessionID:     taskAndSessionID,    // Session ID = Task ID  
+		SessionReused: sessionReused,
+		LiveURL:       liveURL,
+		SocketURL:     socketURL,
+	}
+
+	return response
+}
+
 func CreateErrorResponse(errorType, message string, code int, r *http.Request) *EnhancedTaskResponse {
 	baseURL := generateBaseURL(r)
 
@@ -72,6 +94,17 @@ func CreateErrorResponse(errorType, message string, code int, r *http.Request) *
 			Message: message,
 			Code:    code,
 		},
+	}
+}
+
+func CreateSimpleErrorResponse(errorType, message string, code int) *SimpleTaskResponse {
+	return &SimpleTaskResponse{
+		Success:       false,
+		ID:            "",
+		SessionID:     "",
+		SessionReused: false,
+		LiveURL:       "",
+		SocketURL:     "",
 	}
 }
 
@@ -181,4 +214,39 @@ func StartWebSocketManager() {
 func StartHealthMonitoring() {
 	browserManager.startHealthMonitoring()
 	log.Printf("🏥 Started browser health monitoring")
+}
+
+// Helper functions for result API
+func calculateLogsSummary(logs []LogEntry) LogsSummary {
+	summary := LogsSummary{
+		TotalActions:   0,
+		BrowserActions: 0,
+		Steps:          0,
+		Errors:         0,
+	}
+
+	for _, logEntry := range logs {
+		switch logEntry.Type {
+		case "action":
+			summary.TotalActions++
+			summary.BrowserActions++
+		case "step":
+			summary.Steps++
+		case "error":
+			summary.Errors++
+		}
+	}
+
+	return summary
+}
+
+func formatDuration(milliseconds int64) string {
+	seconds := milliseconds / 1000
+	minutes := seconds / 60
+	remainingSeconds := seconds % 60
+
+	if minutes > 0 {
+		return fmt.Sprintf("%dm %ds", minutes, remainingSeconds)
+	}
+	return fmt.Sprintf("%ds", remainingSeconds)
 }

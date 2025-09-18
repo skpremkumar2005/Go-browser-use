@@ -11,10 +11,199 @@ import os
 import sys
 import time
 from typing import Optional, Dict, Any
+import threading
+import queue
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
+# Configure logging to capture browser-use logs
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
+
+# Custom log handler to capture agent logs
+class AgentLogHandler(logging.Handler):
+    def __init__(self):
+        super().__init__()
+        self.logs = []
+        self.steps = []
+        self.step_counter = 0
+        
+    def sanitize_message(self, message):
+        """Remove or replace Unicode characters that cause encoding issues"""
+        # Replace common emojis with text equivalents
+        emoji_replacements = {
+            '🚀': '[START]',
+            '✅': '[SUCCESS]',
+            '❌': '❌[ERROR]',
+            '🎯': '[TASK]',
+            '📍': '[STEP]',
+            '🦾': '[ACTION]',
+            '👍': '[GOOD]',
+            '🔗': '[LINK]',
+            '📄': '[CONTENT]',
+            '⌨️': '[INPUT]',
+            '🔍': '[SEARCH]',
+            '📊': '[DATA]',
+            '🌐': '[WEB]',
+            '👉': '->',
+            '📋': '[INFO]',
+            '🤖': '[BOT]',
+            '⚡': '[FAST]',
+            '💡': '[TIP]',
+            '🔧': '[CONFIG]',
+            '📸': '[SCREENSHOT]',
+            '🎬': '[RECORDING]',
+            '🛡️': '[SECURE]',
+            '🥷': '[STEALTH]'
+        }
+        
+        # Replace emojis
+        for emoji, replacement in emoji_replacements.items():
+            message = message.replace(emoji, replacement)
+        
+        # Remove ANSI color codes
+        import re
+        ansi_escape = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
+        message = ansi_escape.sub('', message)
+        
+        # Ensure the message is encodable
+        try:
+            message.encode('ascii')
+            return message
+        except UnicodeEncodeError:
+            # Replace any remaining problematic characters
+            return message.encode('ascii', errors='replace').decode('ascii')
+        
+    def emit(self, record):
+        try:
+            raw_message = record.getMessage()
+            sanitized_message = self.sanitize_message(raw_message)
+            
+            log_entry = {
+                "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(record.created)),
+                "level": record.levelname.lower(),
+                "type": "stdout",
+                "message": sanitized_message,
+                "step": None,
+                "action": None
+            }
+            
+            # Detect different types of messages and create user-friendly versions
+            message = record.getMessage()
+            
+            # Detect steps
+            if "Step" in message and ":" in message:
+                self.step_counter += 1
+                log_entry["type"] = "step"
+                log_entry["message"] = f"Starting Step {self.step_counter}"
+                step_info = {
+                    "id": f"step-{self.step_counter}",
+                    "step": self.step_counter,
+                    "evaluation_previous_goal": "",
+                    "next_goal": f"Step {self.step_counter}: Processing task",
+                    "url": ""
+                }
+                self.steps.append(step_info)
+                
+            elif "Eval:" in message:
+                log_entry["type"] = "evaluation" 
+                if "Success" in message:
+                    log_entry["message"] = "Previous action completed successfully"
+                    # Update last step's evaluation
+                    if self.steps and len(self.steps) > 1:
+                        self.steps[-2]["evaluation_previous_goal"] = "Previous action completed successfully"
+                else:
+                    log_entry["message"] = "Evaluating previous action"
+                    if self.steps and len(self.steps) > 1:
+                        self.steps[-2]["evaluation_previous_goal"] = "Evaluating previous action"
+                        
+            elif "ACTION" in message or "action" in message.lower():
+                log_entry["type"] = "action"
+                if "go_to_url" in message:
+                    log_entry["message"] = "Navigating to webpage"
+                elif "click" in message.lower():
+                    log_entry["message"] = "Clicking on element"
+                elif "input_text" in message:
+                    log_entry["message"] = "Typing text into input field"
+                elif "send_keys" in message:
+                    log_entry["message"] = "Pressing keyboard keys"
+                elif "extract_structured_data" in message:
+                    log_entry["message"] = "Analyzing page content"
+                elif "done" in message:
+                    log_entry["message"] = "Task completed"
+                else:
+                    log_entry["message"] = "Performing browser action"
+                    
+            elif "Next goal:" in message:
+                log_entry["type"] = "goal"
+                goal_text = message.split("Next goal:")[-1].strip()
+                log_entry["message"] = f"Planning: {goal_text[:100]}..."
+                # Update last step's next goal
+                if self.steps:
+                    self.steps[-1]["next_goal"] = goal_text[:200]
+                    
+            elif "Navigated to" in message:
+                log_entry["type"] = "navigation"
+                log_entry["message"] = "Successfully navigated to webpage"
+                
+            elif "Typed" in message:
+                log_entry["type"] = "input"
+                log_entry["message"] = "Text input completed"
+                
+            elif "Sent keys" in message:
+                log_entry["type"] = "keyboard" 
+                log_entry["message"] = "Keyboard action completed"
+                
+            elif "Result:" in message:
+                log_entry["type"] = "task_completion"
+                log_entry["message"] = "Task completed with results"
+                
+            elif "completed successfully" in message.lower():
+                log_entry["type"] = "task_completion"
+                log_entry["message"] = "[SUCCESS] Task completed successfully"
+                
+            elif "error" in message.lower() or "failed" in message.lower():
+                log_entry["type"] = "error"
+                log_entry["level"] = "error"
+                log_entry["message"] = f"Error occurred: {sanitized_message[:100]}..."
+                
+            elif "HTTP Request" in message:
+                log_entry["type"] = "network"
+                log_entry["message"] = "Making API request"
+                
+            elif "Connecting to" in message:
+                log_entry["type"] = "connection"
+                log_entry["message"] = "Connecting to browser"
+                
+            elif "Starting task:" in message:
+                log_entry["type"] = "task_start" 
+                task_desc = message.split(":", 1)[1].strip() if ":" in message else message
+                log_entry["message"] = f"[TASK] Starting task: {task_desc}"
+                
+            elif "browser-use version" in message:
+                log_entry["type"] = "startup"
+                log_entry["message"] = "Browser automation system started"
+                
+            # Clean up stdout messages - only keep meaningful ones
+            elif log_entry["type"] == "stdout":
+                if sanitized_message.strip() in ["", "\n"] or len(sanitized_message.strip()) < 3:
+                    return  # Skip empty or very short messages
+                elif any(skip in sanitized_message.lower() for skip in ["2025-", "debug", "trace"]):
+                    return  # Skip timestamp-only or debug messages
+                else:
+                    log_entry["message"] = sanitized_message.strip()[:200]  # Truncate long messages
+            
+            self.logs.append(log_entry)
+            
+            # Print log for real-time monitoring
+            print(f"[LOG] {log_entry['type'].upper()}: {log_entry['message']}", flush=True)
+            
+        except Exception as e:
+            print(f"[LOG_ERROR] Failed to process log: {e}", flush=True)
+
+# Global log handler
+log_handler = AgentLogHandler()
 
 try:
     from browser_use import Agent
@@ -39,6 +228,15 @@ class UnifiedBrowserUseAgent:
     def load_environment(self):
         """Load and validate environment variables"""
         try:
+            # Setup logging to capture browser-use logs
+            browser_use_logger = logging.getLogger('browser_use')
+            browser_use_logger.setLevel(logging.INFO)
+            browser_use_logger.addHandler(log_handler)
+            
+            # Also capture root logger for general messages
+            root_logger = logging.getLogger()
+            root_logger.addHandler(log_handler)
+            
             # Azure OpenAI configuration
             api_key = os.getenv("AZURE_OPENAI_API_KEY")
             api_base = os.getenv("AZURE_OPENAI_API_BASE") or os.getenv("AZURE_OPENAI_ENDPOINT")
@@ -84,47 +282,16 @@ class UnifiedBrowserUseAgent:
                 # Core stealth settings
                 stealth=True,
                 disable_security=False,
-                deterministic_rendering=False,
-                enable_default_extensions=True,
-                headless=True,
+                headless=False,  # Set to False for live streaming
                 
                 # Randomized human-like timings (more realistic)
-                wait_between_actions=random.uniform(1.5, 3.0),  # Slower, more human-like
-                minimum_wait_page_load_time=random.uniform(1.0, 2.0),
-                wait_for_network_idle_page_load_time=random.uniform(2.0, 4.0),
-                maximum_wait_page_load_time=random.uniform(15.0, 25.0),
+                wait_between_actions=random.uniform(1.0, 2.0),
+                minimum_wait_page_load_time=random.uniform(0.5, 1.0),
+                wait_for_network_idle_page_load_time=random.uniform(1.0, 2.0),
+                maximum_wait_page_load_time=random.uniform(10.0, 15.0),
                 
                 # Disable automation hints
                 highlight_elements=False,
-                
-                # Enhanced stealth arguments
-                args=[
-                    # Language and locale settings
-                    "--lang=en-US",
-                    "--accept-lang=en-US,en;q=0.9",
-                    
-                    # Realistic resource usage
-                    "--memory-pressure-off",
-                    "--max_old_space_size=2048",
-                    
-                    # Human-like browser features
-                    "--enable-features=NetworkService,NetworkServiceInProcess",
-                    "--enable-blink-features=HTMLImports",
-                    "--force-prefers-reduced-motion",
-                    
-                    # Disable automation indicators
-                    "--disable-background-timer-throttling",
-                    "--disable-renderer-backgrounding", 
-                    "--disable-backgrounding-occluded-windows",
-                    
-                    # Enable realistic graphics
-                    "--enable-webgl",
-                    "--enable-accelerated-2d-canvas",
-                    
-                    # Additional privacy that looks human
-                    "--disable-default-apps",
-                    "--disable-sync",
-                ]
             )
             
             # Check if we should connect to existing browser
@@ -164,6 +331,16 @@ class UnifiedBrowserUseAgent:
                 calculate_cost=True,
             )
             
+            # Get the agent's logger to capture logs
+            agent_logger = logging.getLogger('browser_use.agent')
+            agent_logger.setLevel(logging.INFO)
+            agent_logger.addHandler(log_handler)
+            
+            # Also capture service logger
+            service_logger = logging.getLogger('browser_use.agent.service')
+            service_logger.setLevel(logging.INFO)
+            service_logger.addHandler(log_handler)
+            
             logger.info("✅ Ultra-stealth browser-use agent created successfully")
             
         except Exception as e:
@@ -175,30 +352,111 @@ class UnifiedBrowserUseAgent:
         Run the browser automation task using browser-use
         Based on unified-browser-platform architecture
         """
+        start_time = time.time()
+        
         try:
             # Create agent
             await self.create_agent(task, cdp_endpoint, max_steps)
             
-            # Execute the task
-            logger.info(f"🎯 Starting task execution: {task}")
-            # Check if agent.run() is async or sync
-            if asyncio.iscoroutinefunction(self.agent.run):
-                result = await self.agent.run()
-            else:
-                result = self.agent.run()
+            # Clear previous logs and steps
+            log_handler.logs.clear()
+            log_handler.steps.clear()
+            log_handler.step_counter = 0
             
-            logger.info("✅ Task completed successfully")
+            # Add a step tracking interceptor for the agent
+            original_run = self.agent.run
+            
+            async def intercepted_run():
+                """Intercepted run method to capture more detailed steps"""
+                logger.info(f"🎯 Starting task: {task}")
+                log_handler.logs.append({
+                    "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime()),
+                    "level": "info",
+                    "type": "task_start",
+                    "message": f"Starting task: {task}",
+                    "step": None,
+                    "action": None
+                })
+                
+                try:
+                    result = await original_run()
+                    logger.info("✅ Task completed successfully")
+                    log_handler.logs.append({
+                        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime()),
+                        "level": "info",
+                        "type": "task_completion",
+                        "message": f"Task completed successfully: {result}",
+                        "step": None,
+                        "action": None
+                    })
+                    return result
+                except Exception as e:
+                    logger.error(f"❌ Task failed: {e}")
+                    log_handler.logs.append({
+                        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime()),
+                        "level": "error", 
+                        "type": "error",
+                        "message": f"Task failed: {str(e)}",
+                        "step": None,
+                        "action": None
+                    })
+                    raise
+            
+            # Execute the task with interception
+            result = await intercepted_run()
+            
+            end_time = time.time()
+            duration_ms = int((end_time - start_time) * 1000)
+            
+            # Print final logs as JSON for Go to parse
+            final_logs_data = {
+                "logs": log_handler.logs,
+                "steps": log_handler.steps,
+                "logsSummary": {
+                    "totalActions": len([l for l in log_handler.logs if l["type"] in ["action", "click", "input"]]),
+                    "browserActions": len([l for l in log_handler.logs if l["type"] == "action"]),
+                    "steps": len(log_handler.steps),
+                    "errors": len([l for l in log_handler.logs if l["level"] == "error"])
+                },
+                "duration": duration_ms,
+                "durationHuman": f"{duration_ms//60000}m {(duration_ms%60000)//1000}s" if duration_ms > 60000 else f"{duration_ms//1000}s"
+            }
+            
+            # Output logs data as a separate JSON line for Go to parse
+            print(f"[LOGS_DATA] {json.dumps(final_logs_data)}", flush=True)
             
             # Return result in the same format as Node.js version
             return {
                 "success": True,
                 "result": str(result) if result else "Task completed",
                 "cdp_endpoint": cdp_endpoint,
-                "executed_at": time.time()
+                "executed_at": time.time(),
+                "logs_captured": len(log_handler.logs),
+                "steps_captured": len(log_handler.steps)
             }
             
         except Exception as e:
+            end_time = time.time()
+            duration_ms = int((end_time - start_time) * 1000)
+            
             logger.error(f"❌ Task execution failed: {e}")
+            
+            # Still output logs even on failure
+            final_logs_data = {
+                "logs": log_handler.logs,
+                "steps": log_handler.steps,
+                "logsSummary": {
+                    "totalActions": len([l for l in log_handler.logs if l["type"] in ["action", "click", "input"]]),
+                    "browserActions": len([l for l in log_handler.logs if l["type"] == "action"]),
+                    "steps": len(log_handler.steps),
+                    "errors": len([l for l in log_handler.logs if l["level"] == "error"]) + 1  # +1 for this error
+                },
+                "duration": duration_ms,
+                "durationHuman": f"{duration_ms//60000}m {(duration_ms%60000)//1000}s" if duration_ms > 60000 else f"{duration_ms//1000}s"
+            }
+            
+            print(f"[LOGS_DATA] {json.dumps(final_logs_data)}", flush=True)
+            
             # Ensure error is JSON serializable
             error_msg = str(e)
             if not error_msg:
@@ -209,7 +467,9 @@ class UnifiedBrowserUseAgent:
                 "error": error_msg,
                 "error_type": type(e).__name__,
                 "cdp_endpoint": cdp_endpoint,
-                "executed_at": time.time()
+                "executed_at": time.time(),
+                "logs_captured": len(log_handler.logs),
+                "steps_captured": len(log_handler.steps)
             }
 
 async def main():

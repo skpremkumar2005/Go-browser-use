@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
 	"strconv"
 	"strings"
 	"time"
@@ -106,11 +107,12 @@ func LoadConfig() *Config {
 			XvfbDisplay:           GetEnvWithDefault("XVFB_DISPLAY", ":99"),
 			XvfbScreen:            GetEnvWithDefault("XVFB_SCREEN", "0"),
 			XvfbResolution:        GetEnvWithDefault("XVFB_RESOLUTION", "1920x1080x24"),
-			ChromePath:            GetEnvWithDefault("CHROME_PATH", "/usr/bin/google-chrome"),
+			// ChromePath:            GetEnvWithDefault("CHROME_PATH", "/usr/bin/google-chrome"),
+			ChromePath:            GetEnvWithDefault("CHROME_PATH", "C:/Program Files/Google/Chrome/Application/chrome.exe"),
 			MaxConcurrentSessions: parseIntWithDefault("MAX_CONCURRENT_SESSIONS", 5),
 		},
 		Script: ScriptConfig{
-			PythonCommand:    GetEnvWithDefault("PYTHON_COMMAND", "python3"),
+			PythonCommand:    detectPythonPath(),
 			MaxSteps:         parseIntWithDefault("MAX_STEPS", 50),
 			ScriptDir:        GetEnvWithDefault("SCRIPT_DIR", "../../scripts"),
 			TaskScript:       GetEnvWithDefault("TASK_SCRIPT", "browser_task_fixed.py"),
@@ -155,6 +157,36 @@ func GetAllowedOrigins() []string {
 }
 
 // Helper functions for environment variable parsing
+
+// detectPythonPath detects the Python executable path on the system
+func detectPythonPath() string {
+	// Check if PYTHON_COMMAND is set in environment
+	if pythonCmd := os.Getenv("PYTHON_COMMAND"); pythonCmd != "" {
+		log.Printf("🐍 Using Python command from environment: %s", pythonCmd)
+		return pythonCmd
+	}
+
+	// Try common Python executable names on Windows and other systems
+	possiblePaths := []string{
+		"python",      // Most common on Windows
+		"python3",     // Common on Linux/Mac
+		"py",          // Python Launcher on Windows
+		"python.exe",  // Explicit Windows executable
+		"python3.exe", // Explicit Windows Python 3
+	}
+
+	for _, path := range possiblePaths {
+		if _, err := exec.LookPath(path); err == nil {
+			log.Printf("🔍 Found Python at: %s", path)
+			return path
+		}
+	}
+
+	// Fallback to python3 (original default)
+	log.Printf("⚠️ Python not found in PATH, using fallback: python3")
+	log.Printf("💡 Consider installing Python or setting PYTHON_COMMAND environment variable")
+	return "python3"
+}
 
 func GetEnvWithDefault(key, defaultValue string) string {
 	if value := os.Getenv(key); value != "" {

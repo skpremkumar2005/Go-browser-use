@@ -4,8 +4,9 @@ import (
 	"log"
 	"net/http"
 
-	"github.com/gorilla/mux"
 	"go-webrtc/cmd/script-server/config"
+
+	"github.com/gorilla/mux"
 )
 
 // SetupRoutes configures all HTTP routes for the browser controller
@@ -15,6 +16,8 @@ func SetupRoutes(router *mux.Router) {
 	
 	// Task management - matching original routes
 	api.HandleFunc("/browser_use/execute", CreateScriptTaskHandler).Methods("POST")
+	api.HandleFunc("/browser_use/result/{taskId}", GetTaskResultHandler).Methods("GET")
+	api.HandleFunc("/browser_use/status/{taskId}", GetTaskStatusHandler).Methods("GET")
 	api.HandleFunc("/task/{sessionId}", GetScriptTaskHandler).Methods("GET")
 	api.HandleFunc("/task/{sessionId}/cancel", CancelScriptTaskHandler).Methods("POST")
 	api.HandleFunc("/sessions", ListScriptSessionsHandler).Methods("GET")

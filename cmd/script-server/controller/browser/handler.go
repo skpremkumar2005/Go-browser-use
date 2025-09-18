@@ -21,7 +21,7 @@ import (
 func CreateScriptTaskHandler(w http.ResponseWriter, r *http.Request) {
 	var req ScriptTaskRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		errorResponse := CreateErrorResponse("invalid-json", "Invalid JSON in request body", http.StatusBadRequest, r)
+		errorResponse := CreateSimpleErrorResponse("invalid-json", "Invalid JSON in request body", http.StatusBadRequest)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadRequest)
 		json.NewEncoder(w).Encode(errorResponse)
@@ -30,67 +30,141 @@ func CreateScriptTaskHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Validate required fields
 	if req.Task == "" {
-		errorResponse := CreateErrorResponse("missing-task", "Task field is required", http.StatusBadRequest, r)
+		errorResponse := CreateSimpleErrorResponse("missing-task", "Task field is required", http.StatusBadRequest)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadRequest)
 		json.NewEncoder(w).Encode(errorResponse)
 		return
 	}
 
-	sessionID := fmt.Sprintf("script_session_%d", time.Now().UnixNano())
+	var browserSession *BrowserSession
+	var sessionReused = false
+	var taskID string
 
-	// Create browser session first
-	viewport := Viewport{
-		Width:  GetConfig().Browser.ViewportWidth,
-		Height: GetConfig().Browser.ViewportHeight,
-	}
-
-	browserSession, err := GetBrowserManager().CreateBrowserSession(sessionID, viewport)
-	if err != nil {
-		// Check if it's a concurrency limit error
-		if strings.Contains(err.Error(), "maximum concurrent sessions") {
-			errorResponse := CreateErrorResponse("concurrency-limit-reached",
-				fmt.Sprintf("Server is at capacity. Please try again later. %v", err),
-				http.StatusServiceUnavailable, r)
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusServiceUnavailable)
-			json.NewEncoder(w).Encode(errorResponse)
+	// Check if we should reuse an existing browser session
+	if req.SessionID != "" {
+		log.Printf("🔄 Attempting to reuse browser session: %s", req.SessionID)
+		browserSession = GetBrowserManager().GetSession(req.SessionID)
+		
+		if browserSession != nil && browserSession.Status == "ready" {
+			log.Printf("✅ Reusing existing browser session: %s", req.SessionID)
+			sessionReused = true
+			taskID = req.SessionID // Use session ID as task ID for consistency
+			
+			// Cancel any existing cleanup timer
+			GetBrowserManager().cancelCleanupTimer(req.SessionID)
 		} else {
-			errorResponse := CreateErrorResponse("browser-creation-failed",
-				fmt.Sprintf("Failed to create browser session: %v", err),
-				http.StatusInternalServerError, r)
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusInternalServerError)
-			json.NewEncoder(w).Encode(errorResponse)
+			log.Printf("⚠️ Requested session %s not available, creating new session", req.SessionID)
+			browserSession = nil
 		}
-		return
 	}
 
-	// Create script session
-	scriptSession := &ScriptSession{
-		ID:          sessionID,
-		Task:        req.Task,
-		Status:      "queued",
-		BrowserID:   browserSession.ID,
-		CDPEndpoint: browserSession.CDPEndpoint,
-		CreatedAt:   time.Now(),
-		UpdatedAt:   time.Now(),
-		Metadata:    make(map[string]interface{}),
+	// Create new browser session if not reusing
+	if browserSession == nil {
+		sessionID := fmt.Sprintf("browser_session_%d", time.Now().UnixNano())
+		taskID = sessionID // Task ID = Session ID for new sessions too
+		
+		viewport := Viewport{
+			Width:  GetConfig().Browser.ViewportWidth,
+			Height: GetConfig().Browser.ViewportHeight,
+		}
+
+		var err error
+		browserSession, err = GetBrowserManager().CreateBrowserSession(sessionID, viewport)
+		if err != nil {
+			// Check if it's a concurrency limit error
+			if strings.Contains(err.Error(), "maximum concurrent sessions") {
+				errorResponse := CreateSimpleErrorResponse("concurrency-limit-reached",
+					fmt.Sprintf("Server is at capacity. Please try again later. %v", err),
+					http.StatusServiceUnavailable)
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusServiceUnavailable)
+				json.NewEncoder(w).Encode(errorResponse)
+			} else {
+				errorResponse := CreateSimpleErrorResponse("browser-creation-failed",
+					fmt.Sprintf("Failed to create browser session: %v", err),
+					http.StatusInternalServerError)
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusInternalServerError)
+				json.NewEncoder(w).Encode(errorResponse)
+			}
+			return
+		}
+		
+		log.Printf("✅ Created new browser session: %s", browserSession.ID)
 	}
 
-	GetScriptSessionManager().mutex.Lock()
-	GetScriptSessionManager().sessions[sessionID] = scriptSession
-	GetScriptSessionManager().mutex.Unlock()
+	// Check if task already exists (for session reuse)
+	GetScriptSessionManager().mutex.RLock()
+	existingTask := GetScriptSessionManager().sessions[taskID]
+	GetScriptSessionManager().mutex.RUnlock()
 
-	log.Printf("✅ Created task session %s: %s", sessionID, req.Task)
+	var scriptSession *ScriptSession
+
+	if existingTask != nil {
+		// Update existing task with new task details
+		log.Printf("🔄 Updating existing task %s with new task: %s", taskID, req.Task)
+		
+		GetScriptSessionManager().mutex.Lock()
+		existingTask.Task = req.Task
+		existingTask.Status = "queued"
+		existingTask.UpdatedAt = time.Now()
+		
+		// Update LLM config if provided
+		if req.LLMModel != nil {
+			existingTask.Metadata["llm_config"] = req.LLMModel
+		}
+		
+		// Update maxSteps
+		maxSteps := req.MaxSteps
+		if maxSteps <= 0 {
+			maxSteps = GetConfig().Script.MaxSteps
+		}
+		existingTask.Metadata["max_steps"] = maxSteps
+		GetScriptSessionManager().mutex.Unlock()
+		
+		scriptSession = existingTask
+	} else {
+		// Create new script session
+		scriptSession = &ScriptSession{
+			ID:          taskID,               // Task ID = Session ID
+			Task:        req.Task,
+			Status:      "queued",
+			BrowserID:   browserSession.ID,    // Browser session ID
+			CDPEndpoint: browserSession.CDPEndpoint,
+			CreatedAt:   time.Now(),
+			UpdatedAt:   time.Now(),
+			Metadata:    make(map[string]interface{}),
+		}
+
+		// Store LLM config in metadata if provided
+		if req.LLMModel != nil {
+			scriptSession.Metadata["llm_config"] = req.LLMModel
+		}
+
+		// Store maxSteps in metadata
+		maxSteps := req.MaxSteps
+		if maxSteps <= 0 {
+			maxSteps = GetConfig().Script.MaxSteps // Use default from config
+		}
+		scriptSession.Metadata["max_steps"] = maxSteps
+
+		GetScriptSessionManager().mutex.Lock()
+		GetScriptSessionManager().sessions[taskID] = scriptSession
+		GetScriptSessionManager().mutex.Unlock()
+	}
+
+	log.Printf("✅ Task %s in session %s: %s", taskID, browserSession.ID, req.Task)
 
 	// Start task execution in background
-	go ExecuteScriptTask(sessionID, req.Task, req.MaxSteps)
+	maxSteps := req.MaxSteps
+	if maxSteps <= 0 {
+		maxSteps = GetConfig().Script.MaxSteps
+	}
+	go ExecuteScriptTask(taskID, req.Task, maxSteps)
 
-	// Create enhanced response
-	response := CreateEnhancedTaskResponse(scriptSession, browserSession, r)
-	response.Status = "started" // Override status for immediate response
-	response.Message = "Task started successfully! Browser-use automation available at automation_url"
+	// Create simplified response - Task ID and Session ID are the same!
+	response := CreateSimpleTaskResponse(scriptSession, browserSession, r, sessionReused)
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
@@ -1033,4 +1107,105 @@ func HandleStreamWebSocket(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+}
+
+// GetTaskResultHandler returns detailed result information for a task
+func GetTaskResultHandler(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	taskID := vars["taskId"]
+
+	GetScriptSessionManager().mutex.RLock()
+	session := GetScriptSessionManager().sessions[taskID]
+	GetScriptSessionManager().mutex.RUnlock()
+
+	if session == nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Task not found"})
+		return
+	}
+
+	// Generate base URL for links
+	baseURL := generateBaseURL(r)
+	
+	// Build the detailed result response
+	result := &TaskResultResponse{
+		ID:                taskID,
+		Task:              session.Task,
+		LiveURL:           fmt.Sprintf("%s/api/live-automation/%s", baseURL, taskID),
+		Output:            session.Output,
+		Status:            session.Status,
+		CreatedAt:         session.CreatedAt.Format("2006-01-02T15:04:05.000Z"),
+		Steps:             session.Steps,
+		BrowserData:       BrowserData{Cookies: []interface{}{}},
+		UserUploadedFiles: []string{},
+		OutputFiles:       []string{},
+		PublicShareURL:    fmt.Sprintf("%s/session/%s/result", baseURL, taskID),
+		TokenUsage:        session.TokenUsage,
+		Summary:           session.Summary,
+		Metadata: TaskMetadata{
+			SessionID:     session.BrowserID,
+			Logs:          session.Logs,
+			LogsSummary:   calculateLogsSummary(session.Logs),
+		},
+	}
+
+	// Set finished time if completed
+	if session.FinishedAt != nil {
+		finishedTime := session.FinishedAt.Format("2006-01-02T15:04:05.000Z")
+		result.FinishedAt = &finishedTime
+	}
+
+	// Calculate duration
+	var endTime time.Time
+	if session.FinishedAt != nil {
+		endTime = *session.FinishedAt
+	} else {
+		endTime = time.Now()
+	}
+	duration := endTime.Sub(session.CreatedAt).Milliseconds()
+	result.Metadata.Duration = duration
+	result.Metadata.DurationHuman = formatDuration(duration)
+
+	// Set default output if empty
+	if result.Output == "" {
+		if session.Status == "completed" {
+			result.Output = fmt.Sprintf("Task executed successfully! Browser is now available at: %s", result.LiveURL)
+		} else if session.Status == "failed" {
+			result.Output = "Task execution failed"
+		} else if session.Status == "running" {
+			result.Output = "Task is currently running"
+		} else {
+			result.Output = "Task is queued for execution"
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(result)
+}
+
+// GetTaskStatusHandler returns simple status for a task
+func GetTaskStatusHandler(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	taskID := vars["taskId"]
+
+	GetScriptSessionManager().mutex.RLock()
+	session := GetScriptSessionManager().sessions[taskID]
+	GetScriptSessionManager().mutex.RUnlock()
+
+	if session == nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Task not found"})
+		return
+	}
+
+	response := &TaskStatusResponse{
+		Status: session.Status,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(response)
 }

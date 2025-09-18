@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-	"go-webrtc/internal/stealth"
+	"go-webrtc/cmd/internal/stealth"
 )
 
 // CDPClient functions

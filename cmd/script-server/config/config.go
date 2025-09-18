@@ -58,9 +58,9 @@ type ScriptConfig struct {
 
 // StreamingConfig holds streaming-related configuration
 type StreamingConfig struct {
-	FrameRate          int
-	CompletionTimeout  time.Duration
-	LogInterval        time.Duration
+	FrameRate         int
+	CompletionTimeout time.Duration
+	LogInterval       time.Duration
 }
 
 // CDPConfig holds Chrome DevTools Protocol configuration
@@ -78,7 +78,7 @@ func LoadConfig() *Config {
 	// Load environment variables from .env file (try multiple paths)
 	envPaths := []string{"../../.env", ".env", "../.env"}
 	envLoaded := false
-	
+
 	for _, path := range envPaths {
 		if err := godotenv.Load(path); err == nil {
 			log.Printf("✅ Loaded environment variables from %s", path)
@@ -86,7 +86,7 @@ func LoadConfig() *Config {
 			break
 		}
 	}
-	
+
 	if !envLoaded {
 		log.Printf("⚠️ Warning: Could not load .env file from any of the paths: %v", envPaths)
 	}
@@ -99,22 +99,22 @@ func LoadConfig() *Config {
 			WriteTimeout: parseDurationWithDefault("SERVER_WRITE_TIMEOUT", "30s"),
 		},
 		Browser: BrowserConfig{
-			Width:                 parseIntWithDefault("BROWSER_WIDTH", 1920),
-			Height:                parseIntWithDefault("BROWSER_HEIGHT", 1080),
-			ViewportWidth:         parseIntWithDefault("BROWSER_WIDTH", 1920),
-			ViewportHeight:        parseIntWithDefault("BROWSER_HEIGHT", 1080),
-			Display:               GetEnvWithDefault("DISPLAY", ":99"),
-			XvfbDisplay:           GetEnvWithDefault("XVFB_DISPLAY", ":99"),
-			XvfbScreen:            GetEnvWithDefault("XVFB_SCREEN", "0"),
-			XvfbResolution:        GetEnvWithDefault("XVFB_RESOLUTION", "1920x1080x24"),
-			// ChromePath:            GetEnvWithDefault("CHROME_PATH", "/usr/bin/google-chrome"),
-			ChromePath:            GetEnvWithDefault("CHROME_PATH", "C:/Program Files/Google/Chrome/Application/chrome.exe"),
+			Width:          parseIntWithDefault("BROWSER_WIDTH", 1920),
+			Height:         parseIntWithDefault("BROWSER_HEIGHT", 1080),
+			ViewportWidth:  parseIntWithDefault("BROWSER_WIDTH", 1920),
+			ViewportHeight: parseIntWithDefault("BROWSER_HEIGHT", 1080),
+			Display:        GetEnvWithDefault("DISPLAY", ":99"),
+			XvfbDisplay:    GetEnvWithDefault("XVFB_DISPLAY", ":99"),
+			XvfbScreen:     GetEnvWithDefault("XVFB_SCREEN", "0"),
+			XvfbResolution: GetEnvWithDefault("XVFB_RESOLUTION", "1920x1080x24"),
+			ChromePath:     GetEnvWithDefault("CHROME_PATH", "/usr/bin/google-chrome"),
+			// ChromePath:            GetEnvWithDefault("CHROME_PATH", "C:/Program Files/Google/Chrome/Application/chrome.exe"),
 			MaxConcurrentSessions: parseIntWithDefault("MAX_CONCURRENT_SESSIONS", 5),
 		},
 		Script: ScriptConfig{
 			PythonCommand:    detectPythonPath(),
 			MaxSteps:         parseIntWithDefault("MAX_STEPS", 50),
-			ScriptDir:        GetEnvWithDefault("SCRIPT_DIR", "../../scripts"),
+			ScriptDir:        GetEnvWithDefault("SCRIPT_DIR", "libs/utils/shared/scripts"),
 			TaskScript:       GetEnvWithDefault("TASK_SCRIPT", "browser_task_fixed.py"),
 			ActionScript:     GetEnvWithDefault("ACTION_SCRIPT", "browser_action_fixed.py"),
 			ScreenshotScript: GetEnvWithDefault("SCREENSHOT_SCRIPT", "browser_screenshot_fixed.py"),
@@ -210,17 +210,17 @@ func parseDurationWithDefault(key, defaultValue string) time.Duration {
 	if duration, err := time.ParseDuration(value); err == nil {
 		return duration
 	}
-	
+
 	// Fallback: try parsing as seconds if it's just a number
 	if seconds, err := strconv.Atoi(value); err == nil {
 		return time.Duration(seconds) * time.Second
 	}
-	
+
 	log.Printf("⚠️ Invalid duration value for %s: %s, using default: %s", key, value, defaultValue)
 	if defaultDuration, err := time.ParseDuration(defaultValue); err == nil {
 		return defaultDuration
 	}
-	
+
 	return 30 * time.Second // Ultimate fallback
 }
 
@@ -232,17 +232,17 @@ func parseCDPPorts() []string {
 // logConfiguration logs the loaded configuration for debugging
 func logConfiguration(config *Config) {
 	log.Printf("🔧 Configuration loaded:")
-	log.Printf("   Server: %s:%s (Read: %v, Write: %v)", 
-		config.Server.Host, config.Server.Port, 
+	log.Printf("   Server: %s:%s (Read: %v, Write: %v)",
+		config.Server.Host, config.Server.Port,
 		config.Server.ReadTimeout, config.Server.WriteTimeout)
-	log.Printf("   Browser: %dx%d, Display: %s, Chrome: %s", 
-		config.Browser.Width, config.Browser.Height, 
+	log.Printf("   Browser: %dx%d, Display: %s, Chrome: %s",
+		config.Browser.Width, config.Browser.Height,
 		config.Browser.Display, config.Browser.ChromePath)
-	log.Printf("   Scripts: %s, Dir: %s, Max Steps: %d", 
+	log.Printf("   Scripts: %s, Dir: %s, Max Steps: %d",
 		config.Script.PythonCommand, config.Script.ScriptDir, config.Script.MaxSteps)
-	log.Printf("   Streaming: %d FPS, Timeout: %v", 
+	log.Printf("   Streaming: %d FPS, Timeout: %v",
 		config.Streaming.FrameRate, config.Streaming.CompletionTimeout)
-	log.Printf("   CDP: Host: %s, Ports: %v, Timeout: %v", 
+	log.Printf("   CDP: Host: %s, Ports: %v, Timeout: %v",
 		config.CDP.Host, config.CDP.Ports, config.CDP.Timeout)
 	log.Printf("   Max Concurrent Sessions: %d", config.Browser.MaxConcurrentSessions)
 }
@@ -254,31 +254,31 @@ func (c *Config) Validate() error {
 	if c.Server.Port == "" {
 		return fmt.Errorf("server port cannot be empty")
 	}
-	
+
 	// Validate browser configuration
 	if c.Browser.Width <= 0 || c.Browser.Height <= 0 {
 		return fmt.Errorf("browser dimensions must be positive")
 	}
-	
+
 	if c.Browser.MaxConcurrentSessions <= 0 {
 		return fmt.Errorf("max concurrent sessions must be positive")
 	}
-	
+
 	// Validate script configuration
 	if c.Script.MaxSteps <= 0 {
 		return fmt.Errorf("max steps must be positive")
 	}
-	
+
 	// Validate streaming configuration
 	if c.Streaming.FrameRate <= 0 {
 		return fmt.Errorf("streaming frame rate must be positive")
 	}
-	
+
 	// Validate CDP configuration
 	if len(c.CDP.Ports) == 0 {
 		return fmt.Errorf("at least one CDP port must be configured")
 	}
-	
+
 	return nil
 }
 

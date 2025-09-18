@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-	"go-webrtc/internal/stealth"
+	"go-webrtc/cmd/internal/stealth"
 	"go-webrtc/cmd/script-server/config"
 )
 
@@ -23,6 +23,7 @@ var (
 	browserManager       *BrowserManager
 	wsManager            *WebSocketManager
 	upgrader             websocket.Upgrader
+
 )
 
 // InitializeGlobalVariables initializes all global variables with configuration
@@ -327,7 +328,8 @@ func (bm *BrowserManager) CloseSession(sessionID string) error {
 		bm.mutex.Unlock()
 		return fmt.Errorf("session not found")
 	}
-
+// Get CDP port before deleting session
+	cdpPort := session.CDPPort
 	session.mutex.Lock()
 	session.Streaming = false
 	session.mutex.Unlock()
@@ -352,6 +354,26 @@ func (bm *BrowserManager) CloseSession(sessionID string) error {
 		bm.activeSessions--
 	}
 	bm.sessionMutex.Unlock()
+	// Kill any remaining processes on the CDP port
+	if cdpPort > 0 {
+		log.Printf("🧹 Cleaning up CDP port %d for session %s", cdpPort, sessionID)
+		cmd := exec.Command("lsof", "-ti", fmt.Sprintf(":%d", cdpPort))
+		out, err := cmd.Output()
+		if err != nil {
+			log.Printf("⚠️ No processes found on port %d (this is normal): %v", cdpPort, err)
+		} else {
+			pid := strings.TrimSpace(string(out))
+			if pid != "" {
+				killCmd := exec.Command("kill", pid)
+				if err := killCmd.Run(); err != nil {
+					log.Printf("❌ Failed to kill process %s on port %d: %v", pid, cdpPort, err)
+				} else {
+					log.Printf("✅ Successfully killed process %s on port %d", pid, cdpPort)
+				}
+			}
+		}
+	}
+
 
 	log.Printf("✅ Closed browser session %s (active sessions: %d/%d)", sessionID, bm.activeSessions, bm.maxConcurrentSessions)
 	return nil

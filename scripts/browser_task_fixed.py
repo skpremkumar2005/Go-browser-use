@@ -135,7 +135,7 @@ class UnifiedBrowserUseAgent:
                 try:
                     browser_session = BrowserSession(
                         cdp_url=cdp_endpoint,
-                        is_local=False,
+                        is_local=True,
                         browser_profile=browser_profile
                     )
                     
@@ -161,7 +161,6 @@ class UnifiedBrowserUseAgent:
                 max_steps=max_steps + 3,  # Give more steps for natural behavior
                 browser_session=browser_session,
                 use_vision=False,
-                save_conversation_path=None,
                 calculate_cost=True,
             )
             
@@ -218,12 +217,15 @@ async def main():
     if len(sys.argv) < 4:
         print("Usage: python browser_task_fixed.py <session_id> <task> <max_steps> [cdp_endpoint]")
         sys.exit(1)
-    
+    # task="search in bing"
     session_id = sys.argv[1]
     task = sys.argv[2]
+    print(type(task))
     max_steps = int(sys.argv[3])
     cdp_endpoint = sys.argv[4] if len(sys.argv) > 4 else None
+    task=task.replace("google", "bing")
     
+      # Handle newlines in task
     logger.info(f"🚀 Starting browser task script")
     logger.info(f"📋 Session ID: {session_id}")
     logger.info(f"🎯 Task: {task}")

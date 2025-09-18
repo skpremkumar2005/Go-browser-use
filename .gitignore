@@ -8,7 +8,7 @@
 *.out
 go.work
 go.work.sum
-.env
+#.env
 # Go modules
 vendor/
 

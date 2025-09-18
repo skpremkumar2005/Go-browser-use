@@ -198,9 +198,13 @@ func ExecuteScriptTask(sessionID, task string, maxSteps int) {
 				if session, exists := scriptSessionManager.sessions[sessionID]; exists {
 					logs := parseOutputLogs(outputBuffer.String(), sessionID)
 					steps := extractStepsFromLogs(outputBuffer.String(), sessionID) 
+					summary := extractSummaryFromLogs(outputBuffer.String(), sessionID)
 					
 					session.Logs = logs
 					session.Steps = steps
+					if summary != "" {
+						session.Summary = summary
+					}
 					session.UpdatedAt = time.Now()
 					scriptSessionManager.sessions[sessionID] = session
 				}
@@ -307,6 +311,19 @@ func ExecuteScriptTask(sessionID, task string, maxSteps int) {
 
 	scriptSessionManager.mutex.Lock()
 	success, _ := result["success"].(bool)
+	
+	// Parse final logs and summary from output
+	logs := parseOutputLogs(output, sessionID)
+	steps := extractStepsFromLogs(output, sessionID)
+	summary := extractSummaryFromLogs(output, sessionID)
+	
+	// Update session with final parsed data
+	session.Logs = logs
+	session.Steps = steps
+	if summary != "" {
+		session.Summary = summary
+	}
+	
 	if success {
 		session.Status = "completed"
 		session.Metadata["result"] = result
@@ -315,7 +332,7 @@ func ExecuteScriptTask(sessionID, task string, maxSteps int) {
 			session.TokenUsage = parseTokenUsageFromResult(tokenUsageData)
 		}
 		if summaryData, exists := result["summary"]; exists {
-			if summaryStr, ok := summaryData.(string); ok {
+			if summaryStr, ok := summaryData.(string); ok && summaryStr != "" {
 				session.Summary = summaryStr
 			}
 		}
@@ -608,6 +625,7 @@ func parseOutputLogs(output, sessionID string) []LogEntry {
 				} `json:"logsSummary"`
 				Duration      int    `json:"duration"`
 				DurationHuman string `json:"durationHuman"`
+				Summary       string `json:"summary"`
 			}
 			
 			if err := json.Unmarshal([]byte(jsonStr), &logsData); err == nil {
@@ -753,6 +771,30 @@ func extractStepsFromLogs(output, sessionID string) []TaskStepDetail {
 	}
 	
 	return steps
+}
+
+func extractSummaryFromLogs(output, sessionID string) string {
+	lines := strings.Split(output, "\n")
+	
+	// Try to find the structured logs data from Python
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "[LOGS_DATA] ") {
+			jsonStr := strings.TrimPrefix(line, "[LOGS_DATA] ")
+			var logsData struct {
+				Summary string `json:"summary"`
+			}
+			
+			if err := json.Unmarshal([]byte(jsonStr), &logsData); err == nil {
+				if logsData.Summary != "" {
+					log.Printf("✅ Parsed structured summary data for session %s", sessionID)
+					return logsData.Summary
+				}
+			}
+		}
+	}
+	
+	return ""
 }
 
 func extractGoalFromMessage(message string) string {

@@ -408,18 +408,43 @@ class UnifiedBrowserUseAgent:
             end_time = time.time()
             duration_ms = int((end_time - start_time) * 1000)
             
+            # Extract task summary from the final result
+            task_summary = ""
+            if result and hasattr(result, 'history') and result.history:
+                # Get the last action result which contains the final extracted content
+                last_result = result.history[-1]
+                if hasattr(last_result, 'result') and last_result.result:
+                    final_action = last_result.result[0] if isinstance(last_result.result, list) and last_result.result else last_result.result
+                    if hasattr(final_action, 'extracted_content') and final_action.extracted_content:
+                        # Clean up the extracted content to use as summary
+                        task_summary = final_action.extracted_content.strip()
+                        if len(task_summary) > 500:  # Truncate if too long
+                            task_summary = task_summary[:500] + "..."
+            
+            # Clean up step messages - remove ANSI codes
+            cleaned_steps = []
+            for step in log_handler.steps:
+                cleaned_step = step.copy()
+                if cleaned_step.get("next_goal"):
+                    # Remove ANSI escape codes from next_goal
+                    import re
+                    ansi_escape = re.compile(r'\x1b\[[0-9;]*[mK]')
+                    cleaned_step["next_goal"] = ansi_escape.sub('', cleaned_step["next_goal"]).strip()
+                cleaned_steps.append(cleaned_step)
+            
             # Print final logs as JSON for Go to parse
             final_logs_data = {
                 "logs": log_handler.logs,
-                "steps": log_handler.steps,
+                "steps": cleaned_steps,
                 "logsSummary": {
                     "totalActions": len([l for l in log_handler.logs if l["type"] in ["action", "click", "input"]]),
                     "browserActions": len([l for l in log_handler.logs if l["type"] == "action"]),
-                    "steps": len(log_handler.steps),
+                    "steps": len(cleaned_steps),
                     "errors": len([l for l in log_handler.logs if l["level"] == "error"])
                 },
                 "duration": duration_ms,
-                "durationHuman": f"{duration_ms//60000}m {(duration_ms%60000)//1000}s" if duration_ms > 60000 else f"{duration_ms//1000}s"
+                "durationHuman": f"{duration_ms//60000}m {(duration_ms%60000)//1000}s" if duration_ms > 60000 else f"{duration_ms//1000}s",
+                "summary": task_summary
             }
             
             # Output logs data as a separate JSON line for Go to parse
@@ -432,7 +457,8 @@ class UnifiedBrowserUseAgent:
                 "cdp_endpoint": cdp_endpoint,
                 "executed_at": time.time(),
                 "logs_captured": len(log_handler.logs),
-                "steps_captured": len(log_handler.steps)
+                "steps_captured": len(cleaned_steps),
+                "summary": task_summary
             }
             
         except Exception as e:

@@ -286,6 +286,9 @@ type BrowserManager struct {
 	maxConcurrentSessions int
 	activeSessions        int
 	sessionMutex          sync.Mutex // Mutex for session counting
+	// CDP client cache for low-latency action handling (per browser session)
+	cdpClientCache        map[string]*CDPClient
+	cdpCacheMutex         sync.Mutex
 }
 
 type WebSocketManager struct {

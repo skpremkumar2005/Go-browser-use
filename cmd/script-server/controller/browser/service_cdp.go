@@ -38,6 +38,14 @@ func NewCDPClient(wsURL string) *CDPClient {
 }
 
 func (c *CDPClient) Connect() error {
+    // Fast path: if already connected, do nothing
+    c.mutex.RLock()
+    if c.conn != nil {
+        c.mutex.RUnlock()
+        return nil
+    }
+    c.mutex.RUnlock()
+
 	u, err := url.Parse(c.wsURL)
 	if err != nil {
 		return fmt.Errorf("invalid WebSocket URL: %v", err)
@@ -144,25 +152,49 @@ func (c *CDPClient) executeCommand(cmd CDPCommand) {
 	}
 
 	c.conn.SetReadDeadline(time.Now().Add(readTimeout))
-	var response map[string]interface{}
-	if err := c.conn.ReadJSON(&response); err != nil {
-		cmd.Response <- CDPResponse{Error: fmt.Errorf("failed to read response: %v", err)}
-		return
-	}
-
-	if errorData, exists := response["error"]; exists {
-		cmd.Response <- CDPResponse{Error: fmt.Errorf("CDP error: %v", errorData)}
-		return
-	}
-
-	if result, exists := response["result"]; exists {
-		if resultMap, ok := result.(map[string]interface{}); ok {
-			cmd.Response <- CDPResponse{Result: resultMap}
+	for {
+		var response map[string]interface{}
+		if err := c.conn.ReadJSON(&response); err != nil {
+			cmd.Response <- CDPResponse{Error: fmt.Errorf("failed to read response: %v", err)}
 			return
 		}
-	}
 
-	cmd.Response <- CDPResponse{Result: response}
+		// CDP events won't have an 'id'; responses will.
+		if idVal, ok := response["id"]; ok {
+			var id int
+			switch v := idVal.(type) {
+			case float64:
+				id = int(v)
+			case int:
+				id = v
+			default:
+				id = 0
+			}
+			if id != cmd.ID {
+				// Unexpected response ID (shouldn't happen with serialized access); continue reading
+				continue
+			}
+
+			if errorData, exists := response["error"]; exists {
+				cmd.Response <- CDPResponse{Error: fmt.Errorf("CDP error: %v", errorData)}
+				return
+			}
+
+			if result, exists := response["result"]; exists {
+				if resultMap, ok := result.(map[string]interface{}); ok {
+					cmd.Response <- CDPResponse{Result: resultMap}
+					return
+				}
+			}
+
+			// Some commands may return without nested result, pass through
+			cmd.Response <- CDPResponse{Result: response}
+			return
+		}
+
+		// No id -> it's an async event; ignore and keep reading
+		continue
+	}
 }
 
 func (c *CDPClient) SendCommand(method string, params map[string]interface{}) (map[string]interface{}, error) {

@@ -337,6 +337,9 @@ func LiveAutomationHandler(w http.ResponseWriter, r *http.Request) {
 		CreatedAt    string
 		BrowserID    string
 		IsAutomation bool
+		// Added: viewport dimensions for accurate client-side coordinate scaling
+		ViewportWidth  int
+		ViewportHeight int
 	}{
 		TaskID:       session.ID,
 		Task:         session.Task,
@@ -344,6 +347,8 @@ func LiveAutomationHandler(w http.ResponseWriter, r *http.Request) {
 		CreatedAt:    session.CreatedAt.Format("2006-01-02 15:04:05"),
 		BrowserID:    session.BrowserID,
 		IsAutomation: true, // Flag to indicate this is automation mode
+		ViewportWidth:  browserSession.Viewport.Width,
+		ViewportHeight: browserSession.Viewport.Height,
 	}
 
 	// Read the live.html template

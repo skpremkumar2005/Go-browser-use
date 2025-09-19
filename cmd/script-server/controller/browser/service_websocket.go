@@ -67,7 +67,8 @@ func (c *WebSocketClient) ReadPump() {
 		c.Conn.Close()
 	}()
 
-	c.Conn.SetReadLimit(512)
+	// Increased read limit to allow batched typing payloads
+	c.Conn.SetReadLimit(8192)
 	c.Conn.SetReadDeadline(time.Now().Add(60 * time.Second))
 	c.Conn.SetPongHandler(func(string) error {
 		c.Conn.SetReadDeadline(time.Now().Add(60 * time.Second))
@@ -129,12 +130,25 @@ func (c *WebSocketClient) handleActionMessage(message map[string]interface{}) {
 		return
 	}
 
-	cdpClient := NewCDPClient(browserSession.CDPEndpoint)
+	// Reuse a persistent CDP client per browser session to reduce latency
+	var cdpClient *CDPClient
+	browserManager.cdpCacheMutex.Lock()
+	cdpClient = browserManager.cdpClientCache[browserSession.ID]
+	if cdpClient == nil {
+		cdpClient = NewCDPClient(browserSession.CDPEndpoint)
+		browserManager.cdpClientCache[browserSession.ID] = cdpClient
+	}
+	browserManager.cdpCacheMutex.Unlock()
+
+	// Ensure connection is established
 	if err := cdpClient.Connect(); err != nil {
 		log.Printf("❌ Failed to connect to CDP for WebSocket action: %v", err)
-		return
+		// Try a single reconnect if needed
+		if recErr := cdpClient.Reconnect(); recErr != nil {
+			log.Printf("❌ CDP reconnect failed: %v", recErr)
+			return
+		}
 	}
-	defer cdpClient.Close()
 
 	var err error
 	
@@ -169,6 +183,10 @@ func (c *WebSocketClient) handleActionMessage(message map[string]interface{}) {
 
 	if err != nil {
 		log.Printf("❌ WebSocket action failed: %v", err)
+		// Attempt a reconnect next time by forcing reconnect now
+		if recErr := cdpClient.Reconnect(); recErr != nil {
+			log.Printf("⚠️ CDP reconnect after action failure failed: %v", recErr)
+		}
 	} else {
 		log.Printf("✅ WebSocket action executed successfully: %s", action)
 		browserManager.updateUserInteraction(session.BrowserID)

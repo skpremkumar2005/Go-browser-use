@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"go-webrtc/cmd/internal/stealth"
@@ -40,6 +41,8 @@ func InitializeGlobalVariables(configuration map[string]interface{}) {
 		nextPort:              9222,
 		maxConcurrentSessions: configuration["Browser"].(map[string]interface{})["MaxConcurrentSessions"].(int),
 		activeSessions:        0,
+		cdpClientCache:        make(map[string]*CDPClient),
+		cdpCacheMutex:         sync.Mutex{},
 	}
 	
 	wsManager = &WebSocketManager{
@@ -346,6 +349,15 @@ func (bm *BrowserManager) CloseSession(sessionID string) error {
 		session.BrowserProcess.Wait()
 		log.Printf("✅ Browser process terminated for session %s", sessionID)
 	}
+
+	// Clean up any cached CDP client for this session
+	bm.cdpCacheMutex.Lock()
+	if client, ok := bm.cdpClientCache[sessionID]; ok && client != nil {
+		client.Close()
+		delete(bm.cdpClientCache, sessionID)
+		log.Printf("🧹 Cleaned up cached CDP client for session %s", sessionID)
+	}
+	bm.cdpCacheMutex.Unlock()
 
 	delete(bm.sessions, sessionID)
 	bm.mutex.Unlock()

@@ -61,8 +61,8 @@ func CreateSimpleTaskResponse(session *ScriptSession, browserSession *BrowserSes
 	taskAndSessionID := session.ID
 
 	// Generate URLs using the same ID
-	liveURL := fmt.Sprintf("%s/api/live-automation/%s", baseURL, taskAndSessionID)
-	socketURL := fmt.Sprintf("%s/api/stream-screencast/%s", baseURL, taskAndSessionID)
+	liveURL := fmt.Sprintf("%s/api/browser_use/live-automation/%s", baseURL, taskAndSessionID)
+	socketURL := fmt.Sprintf("%s/api/browser_use/stream-screencast/%s", baseURL, taskAndSessionID)
 
 	response := &SimpleTaskResponse{
 		Success:       true,
@@ -179,11 +179,11 @@ func generateBaseURL(r *http.Request) string {
 }
 
 func generateAutomationURL(baseURL, sessionId string) string {
-	return fmt.Sprintf("%s/api/live-automation/%s", baseURL, sessionId)
+	return fmt.Sprintf("%s/api/browser_use/live-automation/%s", baseURL, sessionId)
 }
 
 func generateStreamingURL(baseURL, sessionId string) string {
-	return fmt.Sprintf("%s/api/stream-screencast/%s", baseURL, sessionId)
+	return fmt.Sprintf("%s/api/browser_use/stream-screencast/%s", baseURL, sessionId)
 }
 
 func generateWebSocketURL(baseURL string) string {

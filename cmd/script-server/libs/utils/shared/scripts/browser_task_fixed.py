@@ -460,11 +460,11 @@ class UnifiedBrowserUseAgent:
                                     pause_control["should_pause"] = False
                                     pause_control["is_paused"] = False
                                 
-                                # Much more aggressive checking - every 100ms
-                                await asyncio.sleep(0.1)  
+                                # Check status every 10 seconds for better performance
+                                await asyncio.sleep(10.0)  
                             except Exception as e:
                                 logger.debug(f"Status monitor error: {e}")
-                                await asyncio.sleep(0.2)  # Shorter wait on error
+                                await asyncio.sleep(2.0)  # Longer wait on error
                     
                     # Start the status monitor in the background
                     monitor_task = asyncio.create_task(status_monitor())
@@ -497,7 +497,7 @@ class UnifiedBrowserUseAgent:
                                                 pause_control["is_paused"] = False
                                                 logger.info("▶️ Agent execution resumed")
                                                 break
-                                            await asyncio.sleep(0.05)  # Very frequent checking while paused
+                                            await asyncio.sleep(1.0)  # Check every second while paused
                                     
                                     # Execute the original action
                                     return await original_act(*args, **kwargs)
@@ -518,7 +518,7 @@ class UnifiedBrowserUseAgent:
                                             status = await check_task_status(GLOBAL_SESSION_ID)
                                             if status.get("is_stopped", False):
                                                 raise RuntimeError("Task stopped")
-                                            await asyncio.sleep(0.05)
+                                            await asyncio.sleep(1.0)
                                     
                                     return await original_agenerate(*args, **kwargs)
                                 
@@ -544,7 +544,7 @@ class UnifiedBrowserUseAgent:
                                                 pause_control["is_paused"] = False
                                                 logger.info("▶️ Agent step resumed")
                                                 break
-                                            await asyncio.sleep(0.05)
+                                            await asyncio.sleep(1.0)
                                     
                                     return await original_step(*args, **kwargs)
                                 
@@ -579,7 +579,7 @@ class UnifiedBrowserUseAgent:
                                         pause_control["is_paused"] = False
                                         logger.info("▶️ Step execution resumed")
                                         break
-                                    await asyncio.sleep(0.1)
+                                    await asyncio.sleep(1.0)
                             
                             return await original_execute_step(*args, **kwargs)
                         

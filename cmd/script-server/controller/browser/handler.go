@@ -1178,7 +1178,7 @@ func GetTaskResultHandler(w http.ResponseWriter, r *http.Request) {
 	result := &TaskResultResponse{
 		ID:                taskID,
 		Task:              session.Task,
-		LiveURL:           fmt.Sprintf("%s/api/live-automation/%s", baseURL, taskID),
+		LiveURL:           fmt.Sprintf("%s/api/browser_use/live-automation/%s", baseURL, taskID),
 		Output:            session.Output,
 		Status:            session.Status,
 		CreatedAt:         session.CreatedAt.Format("2006-01-02T15:04:05.000Z"),

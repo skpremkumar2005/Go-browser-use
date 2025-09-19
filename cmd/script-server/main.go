@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"go-webrtc/cmd/script-server/config"
+	"go-webrtc/cmd/script-server/controller"
 	"go-webrtc/cmd/script-server/controller/browser"
 	"go-webrtc/cmd/script-server/libs/utils/helper"
 
@@ -34,13 +35,17 @@ func main() {
 
 	// Setup HTTP router
 	router := mux.NewRouter()
-	
-	// Setup routes
-	browser.SetupRoutes(router)
 
-	// Apply middleware
-	router.Use(browser.EnableCORS)
-	router.Use(browser.LoggingMiddleware)
+	// Create API subrouter and pass to controllers
+	api := router.PathPrefix("/api").Subrouter()
+	controller.SetupRoutes(api)
+
+	// Static file serving for frontend (any non-/api route)
+	router.PathPrefix("/").Handler(http.FileServer(http.Dir("./frontend/")))
+
+	// Apply middleware (defined in this package)
+	router.Use(EnableCORS)
+	router.Use(LoggingMiddleware)
 
 	// Configure HTTP server
 	server := &http.Server{
@@ -59,4 +64,43 @@ func main() {
 	if err := server.ListenAndServe(); err != nil {
 		log.Fatalf("❌ Server failed to start: %v", err)
 	}
+}
+
+// EnableCORS is a middleware that sets CORS headers and handles preflight requests.
+func EnableCORS(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Get allowed origins from config
+		allowedOrigins := helper.GetAllowedOrigins()
+
+		origin := r.Header.Get("Origin")
+		if origin != "" {
+			// Check if origin is allowed
+			for _, allowedOrigin := range allowedOrigins {
+				if allowedOrigin == "*" || allowedOrigin == origin {
+					w.Header().Set("Access-Control-Allow-Origin", origin)
+					break
+				}
+			}
+		}
+
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With")
+		w.Header().Set("Access-Control-Allow-Credentials", "true")
+
+		// Handle preflight requests
+		if r.Method == "OPTIONS" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+
+		next.ServeHTTP(w, r)
+	})
+}
+
+// LoggingMiddleware logs basic request metadata.
+func LoggingMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		log.Printf("📡 %s %s from %s", r.Method, r.URL.Path, r.RemoteAddr)
+		next.ServeHTTP(w, r)
+	})
 }

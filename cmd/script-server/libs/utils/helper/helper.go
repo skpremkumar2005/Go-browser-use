@@ -57,11 +57,11 @@ func GenerateBaseURL(host, port string, isHTTPS bool) string {
 }
 
 func GenerateAutomationURL(baseURL, sessionId string) string {
-	return fmt.Sprintf("%s/api/live-automation/%s", baseURL, sessionId)
+	return fmt.Sprintf("%s/api/browser_use/live-automation/%s", baseURL, sessionId)
 }
 
 func GenerateStreamingURL(baseURL, sessionId string) string {
-	return fmt.Sprintf("%s/api/stream-screencast/%s", baseURL, sessionId)
+	return fmt.Sprintf("%s/api/browser_use/stream-screencast/%s", baseURL, sessionId)
 }
 
 func GenerateWebSocketURL(baseURL string) string {

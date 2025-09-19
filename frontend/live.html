@@ -440,6 +440,9 @@
         const websocketUrl = wsProtocol + '//' + wsHost + '/api/ws';
         
         const isAutomationMode = {{if .IsAutomation}}true{{else}}false{{end}};
+        // Viewport dimensions provided by server for reference
+        const viewportWidth = {{.ViewportWidth}};
+        const viewportHeight = {{.ViewportHeight}};
         let ws = null;
         let streamWs = null; // WebSocket for streaming
         let isStreaming = false;
@@ -454,6 +457,10 @@
         let disconnectTimeout = null;
         const INACTIVITY_TIMEOUT = 30000; // 30 seconds
         let taskCompleted = false;
+        // Typing buffer to batch keystrokes and reduce WS spam
+        let typingBuffer = '';
+        let typingFlushTimer = null;
+        const TYPING_DELAY_MS = 40; // faster flush for lower latency
 
         // DOM elements
         const browserCanvas = document.getElementById('browserCanvas');
@@ -529,7 +536,7 @@
                     console.error('❌ WebSocket stream error:', error);
                     isStreaming = false;
                     isRetrying = false;
-                    
+                    // Seamless UX: do NOT show reconnect overlays/popups; retry silently
                     // Check if this might be a port forwarding or proxy issue
                     const errorMessage = error.message || '';
                     const isConnectionRefused = errorMessage.includes('ECONNREFUSED') || 
@@ -538,8 +545,6 @@
                     
                     if (isConnectionRefused) {
                         console.log('🔧 Detected connection issue - might be port forwarding problem');
-                        showLoadingOverlay('Connection refused - Check port forwarding configuration');
-                        
                         // Try with different protocols or fallback
                         if (retryCount < maxRetries) {
                             retryCount++;
@@ -549,11 +554,7 @@
                                 startWebSocketStreaming();
                             }, delay);
                         } else {
-                            showLoadingOverlay('Cannot connect - Port forwarding may not be configured correctly');
-                            // Auto-run diagnostics for port forwarding issues
-                            setTimeout(() => {
-                                runConnectionDiagnostics();
-                            }, 1000);
+                            console.warn('⚠️ Stream not reachable after retries');
                         }
                     } else {
                         // Auto-reconnect for other errors
@@ -566,11 +567,6 @@
                             }, delay);
                         } else {
                             console.error('❌ Max WebSocket retry attempts reached');
-                            showLoadingOverlay('Stream connection failed - Please refresh');
-                            // Auto-run diagnostics for connection failures
-                            setTimeout(() => {
-                                runConnectionDiagnostics();
-                            }, 1000);
                         }
                     }
                 };
@@ -686,8 +682,6 @@
                         }, delay);
                     } else {
                         console.error('❌ Max retry attempts reached for stream errors');
-                        showLoadingOverlay('Connection failed - Please refresh');
-                        showError('Stream connection failed after multiple attempts. Please refresh the page.');
                         isRetrying = false;
                     }
                     return;
@@ -743,9 +737,7 @@
                     
                     function handleStreamError() {
                         if (retryCount <= maxRetries) {
-                            showLoadingOverlay(`Reconnecting... (${retryCount}/${maxRetries})`);
-                            
-                            // Auto-retry with exponential backoff - longer delays for server cleanup
+                            // Auto-retry with exponential backoff - silent
                             const baseDelay = 5000; // Start with 5 seconds
                             const delay = Math.min(baseDelay * Math.pow(1.5, retryCount - 1), 30000);
                             streamTimeout = setTimeout(() => {
@@ -755,8 +747,6 @@
                             }, delay);
                         } else {
                             console.error('❌ Max retry attempts reached');
-                            showLoadingOverlay('Connection failed - Please refresh');
-                            showError('Stream connection failed after multiple attempts. Please refresh the page.');
                             isRetrying = false;
                         }
                     }
@@ -1020,7 +1010,9 @@
         // Setup browser interactions
         function setupBrowserInteractions() {
             browserCanvas.addEventListener('click', handleBrowserClick);
-            browserCanvas.addEventListener('wheel', handleBrowserScroll, { passive: false });
+            // Throttle scroll events to improve accuracy and reduce flooding
+            const throttledScroll = throttle(handleBrowserScroll, 50);
+            browserCanvas.addEventListener('wheel', throttledScroll, { passive: false });
             browserCanvas.addEventListener('contextmenu', (e) => {
                 e.preventDefault();
             });
@@ -1029,14 +1021,39 @@
             window.addEventListener('keydown', handleBrowserKeydown);
         }
 
+        // Simple throttle helper
+        function throttle(fn, limitMs) {
+            let lastCall = 0;
+            return function(...args) {
+                const now = Date.now();
+                if (now - lastCall >= limitMs) {
+                    lastCall = now;
+                    return fn.apply(this, args);
+                }
+            }
+        }
+
+        // Compute scaled coordinates from displayed image to source (browser) pixels
+        function getScaledCoordinates(event) {
+            const rect = browserCanvas.getBoundingClientRect();
+            const displayX = event.clientX - rect.left;
+            const displayY = event.clientY - rect.top;
+            // Use natural dimensions from the current frame if available
+            const sourceW = browserCanvas.naturalWidth || viewportWidth || rect.width;
+            const sourceH = browserCanvas.naturalHeight || viewportHeight || rect.height;
+            const scaleX = sourceW / rect.width;
+            const scaleY = sourceH / rect.height;
+            return {
+                x: Math.round(displayX * scaleX),
+                y: Math.round(displayY * scaleY)
+            };
+        }
+
         // Click handler
         function handleBrowserClick(event) {
             event.preventDefault();
-            const rect = browserCanvas.getBoundingClientRect();
-            const x = event.clientX - rect.left;
-            const y = event.clientY - rect.top;
-            
-            console.log(`🖱️ Browser click at: (${Math.round(x)}, ${Math.round(y)})`);
+            const scaled = getScaledCoordinates(event);
+            console.log(`🖱️ Browser click at (display->source): (${Math.round(event.clientX)}, ${Math.round(event.clientY)}) -> (${scaled.x}, ${scaled.y})`);
             
             // Reset disconnect timer on interaction
             resetInteractionTimer();
@@ -1045,8 +1062,8 @@
             createRippleEffect(event.clientX, event.clientY);
             
             executeAction('click', {
-                x: Math.round(x),
-                y: Math.round(y),
+                x: scaled.x,
+                y: scaled.y,
                 button: event.button || 0,
                 timestamp: Date.now()
             });
@@ -1091,6 +1108,18 @@
             });
         }
 
+        // Global flush function for typing buffer
+        function flushTypingBuffer() {
+            if (typingBuffer.length > 0) {
+                executeAction('type', { text: typingBuffer, timestamp: Date.now() });
+                typingBuffer = '';
+            }
+            if (typingFlushTimer) {
+                clearTimeout(typingFlushTimer);
+                typingFlushTimer = null;
+            }
+        }
+
         // Keyboard handler
         function handleBrowserKeydown(event) {
             const activeElement = document.activeElement;
@@ -1100,17 +1129,24 @@
                 activeElement.contentEditable === 'true'
             );
 
-            // Special keys that should always be handled
+            // Special keys that should always be handled as individual events
             const specialKeys = ['Escape', 'Tab', 'Enter', 'Backspace', 'Delete', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Home', 'End', 'PageUp', 'PageDown'];
-            
-            if (specialKeys.includes(event.key) || event.ctrlKey || event.altKey || event.metaKey) {
-                if (!isTextInput) {
-                    event.preventDefault();
-                }
-                
-                // Reset disconnect timer on interaction
-                resetInteractionTimer();
-                
+
+            const isModifierOnly = (event.key === 'Shift' || event.key === 'Alt' || event.key === 'Control' || event.key === 'Meta');
+
+            // Always keep our page from stealing focus/scroll when controlling remote
+            event.preventDefault();
+            // Reset disconnect timer on interaction
+            resetInteractionTimer();
+
+            if (isModifierOnly) {
+                // Do nothing for modifiers alone
+                return;
+            }
+
+            if (specialKeys.includes(event.key) || event.ctrlKey || event.metaKey) {
+                // Flush any buffered typing before special key
+                flushTypingBuffer();
                 executeAction('key', {
                     key: event.key,
                     ctrlKey: event.ctrlKey,
@@ -1119,19 +1155,31 @@
                     metaKey: event.metaKey,
                     timestamp: Date.now()
                 });
-            } else if (!isTextInput) {
-                // Regular typing
-                event.preventDefault();
-                
-                // Reset disconnect timer on interaction
-                resetInteractionTimer();
-                
-                executeAction('type', {
-                    text: event.key,
-                    timestamp: Date.now()
-                });
+                return;
+            }
+
+            // If not typing into a local input, buffer printable characters
+            if (!isTextInput) {
+                const isPrintable = (event.key && event.key.length === 1);
+                if (isPrintable) {
+                    typingBuffer += event.key;
+                    if (typingFlushTimer) {
+                        clearTimeout(typingFlushTimer);
+                    }
+                    typingFlushTimer = setTimeout(() => {
+                        flushTypingBuffer();
+                    }, TYPING_DELAY_MS);
+                }
             }
         }
+
+        // Flush buffer on keyup to minimize perceived latency when user pauses
+        window.addEventListener('keyup', function() {
+            if (typingBuffer.length > 0) {
+                // micro-delay to allow next keydown in fast typing bursts
+                setTimeout(() => flushTypingBuffer(), 0);
+            }
+        });
 
         // Execute action via WebSocket
         function executeAction(action, data) {
@@ -1228,8 +1276,7 @@
             // Clear the current stream
             browserCanvas.src = '';
             
-            // Show loading overlay instead of placeholder
-            showLoadingOverlay('Refreshing stream...');
+            // Seamless UX: no overlay during refresh
             
             // Clear any existing error messages
             const existingError = document.querySelector('.error-message');
@@ -1346,28 +1393,25 @@
 
         // Keyboard shortcuts
         document.addEventListener('keydown', function(event) {
-            // Toggle UI panels with 'H' key
-            if (event.key === 'h' || event.key === 'H') {
-                if (event.target.tagName !== 'INPUT' && event.target.tagName !== 'TEXTAREA') {
-                    event.preventDefault();
-                    toggleUIPanels();
-                }
+            // Require Alt key for local UI shortcuts to avoid interfering with remote typing
+            const inText = event.target.tagName === 'INPUT' || event.target.tagName === 'TEXTAREA' || event.target.isContentEditable;
+            if (!event.altKey) {
+                return; // no local shortcuts without Alt
             }
-            
-            // Toggle fullscreen with 'F' key
-            if (event.key === 'f' || event.key === 'F') {
-                if (event.target.tagName !== 'INPUT' && event.target.tagName !== 'TEXTAREA') {
-                    event.preventDefault();
-                    toggleFullscreen();
-                }
+            // Toggle UI panels with Alt+H
+            if (event.key.toLowerCase() === 'h' && !inText) {
+                event.preventDefault();
+                toggleUIPanels();
             }
-            
-            // Refresh stream with 'R' key
-            if (event.key === 'r' || event.key === 'R') {
-                if (event.target.tagName !== 'INPUT' && event.target.tagName !== 'TEXTAREA') {
-                    event.preventDefault();
-                    refreshStream();
-                }
+            // Toggle fullscreen with Alt+F
+            if (event.key.toLowerCase() === 'f' && !inText) {
+                event.preventDefault();
+                toggleFullscreen();
+            }
+            // Refresh stream with Alt+R
+            if (event.key.toLowerCase() === 'r' && !inText) {
+                event.preventDefault();
+                refreshStream();
             }
         });
     </script>

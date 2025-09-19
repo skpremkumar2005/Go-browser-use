@@ -394,6 +394,9 @@
                     <button class="control-btn secondary" onclick="refreshStream()" title="Refresh Stream (R key)">
                         🔄 Refresh
                     </button>
+                    <button class="control-btn secondary" onclick="runConnectionDiagnostics()" title="Run Connection Diagnostics">
+                        🔧 Debug
+                    </button>
                     <button class="control-btn secondary" onclick="goBack()" title="Go Back">
                         ← Back
                     </button>
@@ -429,8 +432,13 @@
         // Global variables
         const taskId = '{{.TaskID}}';
         const streamingUrl = '/api/stream-screencast/' + taskId;
-        const websocketStreamUrl = 'ws://' + window.location.host + '/api/stream-ws/' + taskId;
-        const websocketUrl = 'ws://' + window.location.host + '/api/ws';
+        
+        // Dynamic WebSocket URL generation for port forwarding and HTTPS support
+        const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const wsHost = window.location.host;
+        const websocketStreamUrl = wsProtocol + '//' + wsHost + '/api/stream-ws/' + taskId;
+        const websocketUrl = wsProtocol + '//' + wsHost + '/api/ws';
+        
         const isAutomationMode = {{if .IsAutomation}}true{{else}}false{{end}};
         let ws = null;
         let streamWs = null; // WebSocket for streaming
@@ -522,17 +530,48 @@
                     isStreaming = false;
                     isRetrying = false;
                     
-                    // Auto-reconnect
-                    if (retryCount < maxRetries) {
-                        retryCount++;
-                        const delay = Math.min(1000 * retryCount, 3000);
-                        console.log(`🔄 Auto-reconnecting WebSocket stream... (attempt ${retryCount})`);
-                        setTimeout(() => {
-                            startWebSocketStreaming();
-                        }, delay);
+                    // Check if this might be a port forwarding or proxy issue
+                    const errorMessage = error.message || '';
+                    const isConnectionRefused = errorMessage.includes('ECONNREFUSED') || 
+                                              errorMessage.includes('ERR_CONNECTION_REFUSED') ||
+                                              errorMessage.includes('WebSocket connection failed');
+                    
+                    if (isConnectionRefused) {
+                        console.log('🔧 Detected connection issue - might be port forwarding problem');
+                        showLoadingOverlay('Connection refused - Check port forwarding configuration');
+                        
+                        // Try with different protocols or fallback
+                        if (retryCount < maxRetries) {
+                            retryCount++;
+                            const delay = Math.min(2000 * retryCount, 8000); // Longer delay for network issues
+                            console.log(`🔄 Retrying WebSocket connection... (attempt ${retryCount})`);
+                            setTimeout(() => {
+                                startWebSocketStreaming();
+                            }, delay);
+                        } else {
+                            showLoadingOverlay('Cannot connect - Port forwarding may not be configured correctly');
+                            // Auto-run diagnostics for port forwarding issues
+                            setTimeout(() => {
+                                runConnectionDiagnostics();
+                            }, 1000);
+                        }
                     } else {
-                        console.error('❌ Max WebSocket retry attempts reached');
-                        showLoadingOverlay('Stream connection failed - Please refresh');
+                        // Auto-reconnect for other errors
+                        if (retryCount < maxRetries) {
+                            retryCount++;
+                            const delay = Math.min(1000 * retryCount, 3000);
+                            console.log(`🔄 Auto-reconnecting WebSocket stream... (attempt ${retryCount})`);
+                            setTimeout(() => {
+                                startWebSocketStreaming();
+                            }, delay);
+                        } else {
+                            console.error('❌ Max WebSocket retry attempts reached');
+                            showLoadingOverlay('Stream connection failed - Please refresh');
+                            // Auto-run diagnostics for connection failures
+                            setTimeout(() => {
+                                runConnectionDiagnostics();
+                            }, 1000);
+                        }
                     }
                 };
 
@@ -900,6 +939,19 @@
 
                 ws.onerror = function(error) {
                     console.error('❌ WebSocket error:', error);
+                    
+                    // Log additional debug information for port forwarding issues
+                    console.log('🔧 WebSocket URL:', websocketUrl);
+                    console.log('🔧 Current protocol:', window.location.protocol);
+                    console.log('🔧 Current host:', window.location.host);
+                    
+                    // Show helpful message for common port forwarding issues
+                    if (error.type === 'error') {
+                        console.warn('⚠️ WebSocket connection failed - this might be due to:');
+                        console.warn('   - Port 3000 not forwarded correctly');
+                        console.warn('   - Firewall blocking WebSocket connections');
+                        console.warn('   - Proxy not supporting WebSocket upgrades');
+                    }
                 };
             } catch (error) {
                 console.error('❌ Failed to connect WebSocket:', error);
@@ -1094,6 +1146,59 @@
             } else {
                 console.warn('⚠️ WebSocket not connected, action not sent');
             }
+        }
+
+        // Connection diagnostics for port forwarding issues
+        function runConnectionDiagnostics() {
+            console.log('🔧 === CONNECTION DIAGNOSTICS ===');
+            console.log('📍 Current Location:');
+            console.log('   Protocol:', window.location.protocol);
+            console.log('   Host:', window.location.host);
+            console.log('   Pathname:', window.location.pathname);
+            
+            console.log('🔌 WebSocket Configuration:');
+            console.log('   Stream URL:', websocketStreamUrl);
+            console.log('   Control URL:', websocketUrl);
+            console.log('   WS Protocol:', wsProtocol);
+            
+            console.log('🌐 Network Info:');
+            console.log('   User Agent:', navigator.userAgent);
+            console.log('   Online:', navigator.onLine);
+            
+            // Test HTTP connectivity first
+            console.log('🧪 Testing HTTP connectivity...');
+            fetch('/api/health')
+                .then(response => {
+                    console.log('✅ HTTP connection OK, status:', response.status);
+                })
+                .catch(error => {
+                    console.error('❌ HTTP connection failed:', error);
+                    console.warn('⚠️ This suggests port forwarding issues with HTTP traffic');
+                });
+            
+            // Test WebSocket connectivity
+            console.log('🧪 Testing WebSocket connectivity...');
+            const testWs = new WebSocket(websocketUrl);
+            
+            testWs.onopen = function() {
+                console.log('✅ WebSocket connection test PASSED');
+                testWs.close();
+            };
+            
+            testWs.onerror = function(error) {
+                console.error('❌ WebSocket connection test FAILED:', error);
+                console.warn('⚠️ Possible causes:');
+                console.warn('   1. Port 3000 not accessible from external network');
+                console.warn('   2. WebSocket upgrade headers blocked by proxy');
+                console.warn('   3. Firewall blocking WebSocket connections');
+                console.warn('   4. Mixed content policy (HTTP page trying WSS)');
+            };
+            
+            testWs.onclose = function(event) {
+                console.log('🔌 WebSocket test connection closed:', event.code, event.reason);
+            };
+            
+            console.log('🔧 === END DIAGNOSTICS ===');
         }
 
         // Utility functions

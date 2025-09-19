@@ -198,7 +198,7 @@ type TaskResultResponse struct {
 	Output            string            `json:"output"`
 	Status            string            `json:"status"`
 	CreatedAt         string            `json:"created_at"`
-	FinishedAt        *string           `json:"finished_at,omitempty"`
+	FinishedAt        *string           `json:"finished_at"`
 	Steps             []TaskStepDetail  `json:"steps"`
 	BrowserData       BrowserData       `json:"browser_data"`
 	UserUploadedFiles []string          `json:"user_uploaded_files"`
@@ -206,7 +206,7 @@ type TaskResultResponse struct {
 	PublicShareURL    string            `json:"public_share_url"`
 	Summary           string            `json:"summary"`
 	Metadata          TaskMetadata      `json:"metadata"`
-	TokenUsage        *TokenUsageDetail `json:"token_usage,omitempty"`
+	TokenUsage        *TokenUsageDetail `json:"token_usage"`
 }
 
 // Supporting structures for the result API

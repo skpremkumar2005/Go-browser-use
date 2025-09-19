@@ -205,7 +205,7 @@ func ExecuteScriptTask(sessionID, task string, maxSteps int) {
 				// Update session with latest logs
 				scriptSessionManager.mutex.Lock()
 				if session, exists := scriptSessionManager.sessions[sessionID]; exists {
-					logs := parseOutputLogs(outputBuffer.String(), sessionID)
+					logs, tokenUsage := parseOutputLogs(outputBuffer.String(), sessionID)
 					steps := extractStepsFromLogs(outputBuffer.String(), sessionID) 
 					summary := extractSummaryFromLogs(outputBuffer.String(), sessionID)
 					
@@ -213,6 +213,9 @@ func ExecuteScriptTask(sessionID, task string, maxSteps int) {
 					session.Steps = steps
 					if summary != "" {
 						session.Summary = summary
+					}
+					if tokenUsage != nil {
+						session.TokenUsage = tokenUsage
 					}
 					session.UpdatedAt = time.Now()
 					scriptSessionManager.sessions[sessionID] = session
@@ -258,8 +261,12 @@ func ExecuteScriptTask(sessionID, task string, maxSteps int) {
 	log.Printf("📄 Python script output: %s", outputStr)
 
 	// Parse logs and extract steps
-	session.Logs = parseOutputLogs(outputStr, sessionID)
+	logs, tokenUsage := parseOutputLogs(outputStr, sessionID)
+	session.Logs = logs
 	session.Steps = extractStepsFromLogs(outputStr, sessionID)
+	if tokenUsage != nil {
+		session.TokenUsage = tokenUsage
+	}
 
 	lines := strings.Split(outputStr, "\n")
 	jsonFound := false
@@ -325,7 +332,7 @@ func ExecuteScriptTask(sessionID, task string, maxSteps int) {
 	success, _ := result["success"].(bool)
 	
 	// Parse final logs and summary from output
-	logs := parseOutputLogs(output, sessionID)
+	logs, logsTokenUsage := parseOutputLogs(output, sessionID)
 	steps := extractStepsFromLogs(output, sessionID)
 	summary := extractSummaryFromLogs(output, sessionID)
 	
@@ -335,6 +342,9 @@ func ExecuteScriptTask(sessionID, task string, maxSteps int) {
 	if summary != "" {
 		session.Summary = summary
 	}
+	if logsTokenUsage != nil {
+		session.TokenUsage = logsTokenUsage
+	}
 	
 	if success {
 		session.Status = "completed"
@@ -342,6 +352,7 @@ func ExecuteScriptTask(sessionID, task string, maxSteps int) {
 		// Extract additional data from result
 		if tokenUsageData, exists := result["token_usage"]; exists {
 			session.TokenUsage = parseTokenUsageFromResult(tokenUsageData)
+			log.Printf("📊 Token usage parsed for session %s: %+v", sessionID, session.TokenUsage)
 		}
 		if summaryData, exists := result["summary"]; exists {
 			if summaryStr, ok := summaryData.(string); ok && summaryStr != "" {
@@ -606,8 +617,9 @@ func (bm *BrowserManager) cleanupStaleSessions() {
 }
 
 // Helper functions for parsing execution results and logs
-func parseOutputLogs(output, sessionID string) []LogEntry {
+func parseOutputLogs(output, sessionID string) ([]LogEntry, *TokenUsageDetail) {
 	logs := []LogEntry{}
+	var tokenUsage *TokenUsageDetail
 	lines := strings.Split(output, "\n")
 	
 	// First, try to find the structured logs data from Python
@@ -640,10 +652,19 @@ func parseOutputLogs(output, sessionID string) []LogEntry {
 				Duration      int    `json:"duration"`
 				DurationHuman string `json:"durationHuman"`
 				Summary       string `json:"summary"`
+				TokenUsage    interface{} `json:"token_usage"`
 			}
 			
 			if err := json.Unmarshal([]byte(jsonStr), &logsData); err == nil {
 				log.Printf("✅ Parsed structured logs data: %d logs, %d steps", len(logsData.Logs), len(logsData.Steps))
+				
+				// Extract token usage from logs data if available
+				if logsData.TokenUsage != nil {
+					tokenUsage = parseTokenUsageFromResult(logsData.TokenUsage)
+					if tokenUsage != nil {
+						log.Printf("📊 Token usage extracted from logs data for session %s", sessionID)
+					}
+				}
 				
 				// Convert to our LogEntry format
 				for _, logItem := range logsData.Logs {
@@ -658,7 +679,7 @@ func parseOutputLogs(output, sessionID string) []LogEntry {
 					logs = append(logs, logEntry)
 				}
 				
-				return logs
+				return logs, tokenUsage
 			} else {
 				log.Printf("⚠️ Failed to parse structured logs data: %v", err)
 			}
@@ -701,7 +722,7 @@ func parseOutputLogs(output, sessionID string) []LogEntry {
 		logs = append(logs, logEntry)
 	}
 	
-	return logs
+	return logs, tokenUsage
 }
 
 func extractStepsFromLogs(output, sessionID string) []TaskStepDetail {
@@ -830,9 +851,10 @@ func extractGoalFromMessage(message string) string {
 func parseTokenUsageFromResult(tokenUsageData interface{}) *TokenUsageDetail {
 	if tokenMap, ok := tokenUsageData.(map[string]interface{}); ok {
 		tokenUsage := &TokenUsageDetail{
-			Model: "gpt-4.1",
+			Model: "gpt-4.1", // Default model
 		}
-		
+
+		// Parse basic token counts
 		if total, ok := tokenMap["total_tokens"].(float64); ok {
 			tokenUsage.TotalTokens = int(total)
 		}
@@ -848,7 +870,17 @@ func parseTokenUsageFromResult(tokenUsageData interface{}) *TokenUsageDetail {
 		if model, ok := tokenMap["model"].(string); ok {
 			tokenUsage.Model = model
 		}
-		
+
+		// Parse cached token information if available
+		if cachedPrompt, ok := tokenMap["prompt_cached_tokens"].(float64); ok {
+			// Note: TokenUsageDetail doesn't have cached tokens field, but we can log it
+			log.Printf("📊 Cached prompt tokens: %d", int(cachedPrompt))
+		}
+
+		log.Printf("📊 Parsed token usage - Total: %d, Prompt: %d, Completion: %d, Cost: %.4f, Model: %s",
+			tokenUsage.TotalTokens, tokenUsage.PromptTokens, tokenUsage.CompletionTokens,
+			tokenUsage.TotalCost, tokenUsage.Model)
+
 		return tokenUsage
 	}
 	return nil

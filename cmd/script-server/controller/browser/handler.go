@@ -19,7 +19,7 @@ import (
 // HTTP Handlers
 
 func CreateScriptTaskHandler(w http.ResponseWriter, r *http.Request) {
-	var req ScriptTaskRequest
+	var req ExecuteTaskRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		errorResponse := CreateSimpleErrorResponse("invalid-json", "Invalid JSON in request body", http.StatusBadRequest)
 		w.Header().Set("Content-Type", "application/json")
@@ -1146,19 +1146,19 @@ func GetTaskResultHandler(w http.ResponseWriter, r *http.Request) {
 		UserUploadedFiles: []string{},
 		OutputFiles:       []string{},
 		PublicShareURL:    fmt.Sprintf("%s/session/%s/result", baseURL, taskID),
-		TokenUsage:        session.TokenUsage,
 		Summary:           session.Summary,
 		Metadata: TaskMetadata{
 			SessionID:     session.BrowserID,
 			Logs:          session.Logs,
 			LogsSummary:   calculateLogsSummary(session.Logs),
 		},
+		TokenUsage:        session.TokenUsage, // Include token usage data
 	}
 
-	// Set finished time if completed
+	// Set FinishedAt if the task is completed
 	if session.FinishedAt != nil {
-		finishedTime := session.FinishedAt.Format("2006-01-02T15:04:05.000Z")
-		result.FinishedAt = &finishedTime
+		finishedAtStr := session.FinishedAt.Format("2006-01-02T15:04:05.000Z")
+		result.FinishedAt = &finishedAtStr
 	}
 
 	// Calculate duration

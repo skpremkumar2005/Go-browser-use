@@ -114,13 +114,21 @@ type ScriptSession struct {
 	Output      string           `json:"output,omitempty"`
 }
 
+// ScriptTaskRequest represents the request for creating a script task
 type ScriptTaskRequest struct {
 	Task      string    `json:"task"`
 	MaxSteps  int       `json:"maxSteps,omitempty"`
 	SessionID string    `json:"sessionId,omitempty"` // Optional: reuse existing browser session
 	LLMModel  *LLMModel `json:"llm_model,omitempty"`
 }
+type ExecuteTaskRequest struct {
+	MaxSteps  int       `json:"maxSteps"`
+	Task      string    `json:"task"`
+	SessionID string    `json:"sessionId,omitempty"` // Optional: reuse existing browser session
+	LLMModel  *LLMModel `json:"llm_model"`
+}
 
+// LLMModel represents the LLM configuration
 type LLMModel struct {
 	APIKey     string `json:"apiKey"`
 	Provider   string `json:"provider"`
@@ -128,6 +136,28 @@ type LLMModel struct {
 	Deployment string `json:"deployment"`
 	LLMModel   string `json:"llmModel"`
 	Version    string `json:"version,omitempty"`
+}
+
+// ExecuteTaskResponse represents the POST /api/browser_use/execute response
+type ExecuteTaskResponse struct {
+	Success       bool   `json:"success"`
+	ID            string `json:"id"`
+	SessionID     string `json:"sessionId"`
+	SessionReused bool   `json:"session_reused"`
+	LiveURL       string `json:"live_url"`
+	SocketURL     string `json:"socket_url"`
+}
+
+// TaskStatusResponse represents the GET /api/browser_use/status/{taskId} response
+type TaskStatusResponse struct {
+	Status string `json:"status"`
+}
+
+// TaskStopResponse represents the POST /api/browser_use/stop/{taskId} response
+type TaskStopResponse struct {
+	Message string `json:"message"`
+	Status  string `json:"status"`
+	TaskID  string `json:"task_id"`
 }
 
 // Enhanced Response Structures
@@ -160,28 +190,23 @@ type SimpleTaskResponse struct {
 	SocketURL     string `json:"socket_url"`
 }
 
-// Result API Response Structure
+// TaskResultResponse represents the GET /api/browser_use/result/{taskId} response
 type TaskResultResponse struct {
-	ID                string           `json:"id"`
-	Task              string           `json:"task"`
-	LiveURL           string           `json:"live_url"`
-	Output            string           `json:"output"`
-	Status            string           `json:"status"`
-	CreatedAt         string           `json:"created_at"`
-	FinishedAt        *string          `json:"finished_at,omitempty"`
-	Steps             []TaskStepDetail `json:"steps"`
-	BrowserData       BrowserData      `json:"browser_data"`
-	UserUploadedFiles []string         `json:"user_uploaded_files"`
-	OutputFiles       []string         `json:"output_files"`
-	PublicShareURL    string           `json:"public_share_url"`
+	ID                string            `json:"id"`
+	Task              string            `json:"task"`
+	LiveURL           string            `json:"live_url"`
+	Output            string            `json:"output"`
+	Status            string            `json:"status"`
+	CreatedAt         string            `json:"created_at"`
+	FinishedAt        *string           `json:"finished_at,omitempty"`
+	Steps             []TaskStepDetail  `json:"steps"`
+	BrowserData       BrowserData       `json:"browser_data"`
+	UserUploadedFiles []string          `json:"user_uploaded_files"`
+	OutputFiles       []string          `json:"output_files"`
+	PublicShareURL    string            `json:"public_share_url"`
+	Summary           string            `json:"summary"`
+	Metadata          TaskMetadata      `json:"metadata"`
 	TokenUsage        *TokenUsageDetail `json:"token_usage,omitempty"`
-	Summary           string           `json:"summary"`
-	Metadata          TaskMetadata     `json:"metadata"`
-}
-
-// Status API Response Structure
-type TaskStatusResponse struct {
-	Status string `json:"status"`
 }
 
 // Supporting structures for the result API

@@ -432,6 +432,32 @@ class UnifiedBrowserUseAgent:
                     cleaned_step["next_goal"] = ansi_escape.sub('', cleaned_step["next_goal"]).strip()
                 cleaned_steps.append(cleaned_step)
             
+            # Extract token usage data from the agent
+            token_usage_data = None
+            if hasattr(self.agent, 'token_cost_service') and self.agent.token_cost_service:
+                try:
+                    # Get usage summary from the token cost service
+                    usage_summary = await self.agent.token_cost_service.get_usage_summary()
+                    if usage_summary:
+                        # Get model name from the LLM
+                        model_name = "gpt-4.1"  # Default
+                        if hasattr(self.agent, 'llm') and self.agent.llm:
+                            if hasattr(self.agent.llm, 'model'):
+                                model_name = self.agent.llm.model
+                            elif hasattr(self.agent.llm, 'model_name'):
+                                model_name = self.agent.llm.model_name
+
+                        token_usage_data = {
+                            "total_tokens": usage_summary.total_tokens,
+                            "prompt_tokens": usage_summary.total_prompt_tokens,
+                            "completion_tokens": usage_summary.total_completion_tokens,
+                            "total_cost": usage_summary.total_cost,
+                            "model": model_name
+                        }
+                        logger.info(f"📊 Token usage captured: {token_usage_data}")
+                except Exception as e:
+                    logger.warning(f"⚠️ Failed to capture token usage: {e}")
+            
             # Print final logs as JSON for Go to parse
             final_logs_data = {
                 "logs": log_handler.logs,
@@ -444,7 +470,8 @@ class UnifiedBrowserUseAgent:
                 },
                 "duration": duration_ms,
                 "durationHuman": f"{duration_ms//60000}m {(duration_ms%60000)//1000}s" if duration_ms > 60000 else f"{duration_ms//1000}s",
-                "summary": task_summary
+                "summary": task_summary,
+                "token_usage": token_usage_data
             }
             
             # Output logs data as a separate JSON line for Go to parse
@@ -467,6 +494,32 @@ class UnifiedBrowserUseAgent:
             
             logger.error(f"❌ Task execution failed: {e}")
             
+            # Extract token usage data from the agent (even on failure)
+            token_usage_data = None
+            if hasattr(self.agent, 'token_cost_service') and self.agent.token_cost_service:
+                try:
+                    # Get usage summary from the token cost service
+                    usage_summary = await self.agent.token_cost_service.get_usage_summary()
+                    if usage_summary:
+                        # Get model name from the LLM
+                        model_name = "gpt-4.1"  # Default
+                        if hasattr(self.agent, 'llm') and self.agent.llm:
+                            if hasattr(self.agent.llm, 'model'):
+                                model_name = self.agent.llm.model
+                            elif hasattr(self.agent.llm, 'model_name'):
+                                model_name = self.agent.llm.model_name
+
+                        token_usage_data = {
+                            "total_tokens": usage_summary.total_tokens,
+                            "prompt_tokens": usage_summary.total_prompt_tokens,
+                            "completion_tokens": usage_summary.total_completion_tokens,
+                            "total_cost": usage_summary.total_cost,
+                            "model": model_name
+                        }
+                        logger.info(f"📊 Token usage captured (on error): {token_usage_data}")
+                except Exception as e:
+                    logger.warning(f"⚠️ Failed to capture token usage on error: {e}")
+            
             # Still output logs even on failure
             final_logs_data = {
                 "logs": log_handler.logs,
@@ -478,7 +531,8 @@ class UnifiedBrowserUseAgent:
                     "errors": len([l for l in log_handler.logs if l["level"] == "error"]) + 1  # +1 for this error
                 },
                 "duration": duration_ms,
-                "durationHuman": f"{duration_ms//60000}m {(duration_ms%60000)//1000}s" if duration_ms > 60000 else f"{duration_ms//1000}s"
+                "durationHuman": f"{duration_ms//60000}m {(duration_ms%60000)//1000}s" if duration_ms > 60000 else f"{duration_ms//1000}s",
+                "token_usage": token_usage_data
             }
             
             print(f"[LOGS_DATA] {json.dumps(final_logs_data)}", flush=True)

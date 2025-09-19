@@ -16,8 +16,8 @@ var GlobalEnv = map[string]interface{}{
 		"XvfbDisplay":           ":99",
 		"XvfbScreen":            "0",
 		"XvfbResolution":        "1920x1080x24",
-		// "ChromePath":            "C:/Program Files/Google/Chrome/Application/chrome.exe",
-		"ChromePath":            "/usr/bin/google-chrome",
+		"ChromePath":            "C:/Program Files/Google/Chrome/Application/chrome.exe",
+		// "ChromePath":            "/usr/bin/google-chrome",
 		"MaxConcurrentSessions": 5,
 	},
 	"Script": map[string]interface{}{

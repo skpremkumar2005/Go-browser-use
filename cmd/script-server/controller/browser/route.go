@@ -3,6 +3,9 @@ package browser
 import (
 	"log"
 	"net/http"
+	"strings"
+	"sync"
+	"time"
 
 	"go-webrtc/cmd/script-server/libs/utils/helper"
 
@@ -76,10 +79,60 @@ func EnableCORS(next http.Handler) http.Handler {
 	})
 }
 
-// Logging middleware to log HTTP requests
+// Global variables for smart logging
+var (
+	lastTaskStatusLog = make(map[string]time.Time)
+	taskStatusMutex   sync.RWMutex
+	lastCleanup       time.Time
+)
+
+// Clean up old entries to prevent memory leak
+func cleanupTaskStatusLog() {
+	taskStatusMutex.Lock()
+	defer taskStatusMutex.Unlock()
+	
+	// Only cleanup every 10 minutes
+	if time.Since(lastCleanup) < 10*time.Minute {
+		return
+	}
+	
+	cutoff := time.Now().Add(-1 * time.Hour) // Remove entries older than 1 hour
+	for path, lastTime := range lastTaskStatusLog {
+		if lastTime.Before(cutoff) {
+			delete(lastTaskStatusLog, path)
+		}
+	}
+	lastCleanup = time.Now()
+	log.Printf("🧹 Cleaned up task status log, %d entries remaining", len(lastTaskStatusLog))
+}
+
+// Smart logging middleware - reduces spam for high-frequency endpoints
 func LoggingMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		log.Printf("📡 %s %s from %s", r.Method, r.URL.Path, r.RemoteAddr)
+		// Skip logging for high-frequency polling endpoints to reduce spam
+		if strings.Contains(r.URL.Path, "/task-status/") {
+			// Only log task-status requests every 30 seconds per endpoint
+			taskStatusMutex.RLock()
+			lastLog, exists := lastTaskStatusLog[r.URL.Path]
+			shouldLog := !exists || time.Since(lastLog) > 30*time.Second
+			taskStatusMutex.RUnlock()
+			
+			if shouldLog {
+				taskStatusMutex.Lock()
+				// Double-check after acquiring write lock
+				if lastLog, exists := lastTaskStatusLog[r.URL.Path]; !exists || time.Since(lastLog) > 30*time.Second {
+					log.Printf("📡 %s %s from %s (polling - reduced logging)", r.Method, r.URL.Path, r.RemoteAddr)
+					lastTaskStatusLog[r.URL.Path] = time.Now()
+				}
+				taskStatusMutex.Unlock()
+				
+				// Periodic cleanup to prevent memory leak
+				go cleanupTaskStatusLog()
+			}
+		} else {
+			// Log all other requests normally
+			log.Printf("📡 %s %s from %s", r.Method, r.URL.Path, r.RemoteAddr)
+		}
 		next.ServeHTTP(w, r)
 	})
 }

@@ -332,11 +332,18 @@ func (bm *BrowserManager) CloseSession(sessionID string) error {
 		bm.mutex.Unlock()
 		return fmt.Errorf("session not found")
 	}
-// Get CDP port before deleting session
+	// Get CDP port before deleting session
 	cdpPort := session.CDPPort
+	bm.mutex.Unlock() // Release BrowserManager lock BEFORE acquiring session lock
+	
+	// Now safely acquire session lock
 	session.mutex.Lock()
 	session.Streaming = false
 	session.mutex.Unlock()
+	
+	// Re-acquire BrowserManager lock for cleanup
+	bm.mutex.Lock()
+	defer bm.mutex.Unlock()
 
 	if session.CleanupTimer != nil {
 		session.CleanupTimer.Stop()

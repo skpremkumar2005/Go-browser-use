@@ -9,6 +9,7 @@ import (
 	"os"
 	"runtime"
 	"strings"
+	"sync"
 	"text/template"
 	"time"
 
@@ -1041,6 +1042,9 @@ func HandleStreamWebSocket(w http.ResponseWriter, r *http.Request) {
 
 	// Channel to handle graceful shutdown
 	done := make(chan struct{})
+	
+	// Mutex to prevent concurrent WebSocket writes
+	var writeMutex sync.Mutex
 
 	// Start goroutine to handle ping/pong and detect disconnections
 	go func() {
@@ -1048,8 +1052,11 @@ func HandleStreamWebSocket(w http.ResponseWriter, r *http.Request) {
 		for {
 			select {
 			case <-pingTicker.C:
+				writeMutex.Lock()
 				conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
-				if err := conn.WriteMessage(websocket.PingMessage, nil); err != nil {
+				err := conn.WriteMessage(websocket.PingMessage, nil)
+				writeMutex.Unlock()
+				if err != nil {
 					log.Printf("📸 WebSocket ping failed, client disconnected: %v", err)
 					return
 				}
@@ -1068,21 +1075,27 @@ func HandleStreamWebSocket(w http.ResponseWriter, r *http.Request) {
 			currentStatus := session.Status
 			GetScriptSessionManager().mutex.RUnlock()
 
-			// Stop streaming when task completes or fails
+			// On completion, enter grace period instead of stopping immediately
 			if currentStatus == "completed" || currentStatus == "failed" {
-				log.Printf("📸 Stopping WebSocket stream for session %s (task %s)", sessionID, currentStatus)
+				log.Printf("📸 Task %s - entering grace period for manual takeover", currentStatus)
+				writeMutex.Lock()
 				conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
-				if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"task_complete","status":"`+currentStatus+`"}`)); err != nil {
+				err := conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"task_complete","status":"`+currentStatus+`","grace_period":true}`))
+				writeMutex.Unlock()
+				if err != nil {
 					log.Printf("⚠️ Failed to send task complete message: %v", err)
 				}
-				return
+				// Continue streaming for grace period instead of returning
 			}
 
 			// Continue streaming when task is paused - just send a status message
 			if currentStatus == "paused" {
-				log.Printf("📸 Task paused but continuing WebSocket stream for session %s", sessionID)
+				// Reduced logging to prevent spam
+				writeMutex.Lock()
 				conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
-				if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"task_status","status":"paused","message":"Task paused but streaming continues"}`)); err != nil {
+				err := conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"task_status","status":"paused","message":"Task paused but streaming continues"}`))
+				writeMutex.Unlock()
+				if err != nil {
 					log.Printf("⚠️ Failed to send task paused message: %v", err)
 				}
 				// Continue streaming instead of returning
@@ -1095,7 +1108,9 @@ func HandleStreamWebSocket(w http.ResponseWriter, r *http.Request) {
 				// Try to reconnect CDP client
 				if reconnectErr := cdpClient.Reconnect(); reconnectErr != nil {
 					log.Printf("❌ Failed to reconnect CDP client: %v", reconnectErr)
+					writeMutex.Lock()
 					conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"error","message":"CDP connection lost"}`))
+					writeMutex.Unlock()
 					return
 				}
 				log.Printf("✅ CDP client reconnected successfully")
@@ -1121,8 +1136,11 @@ func HandleStreamWebSocket(w http.ResponseWriter, r *http.Request) {
 			}
 
 			// Set write deadline to prevent hanging
+			writeMutex.Lock()
 			conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
-			if err := conn.WriteJSON(frameData); err != nil {
+			err = conn.WriteJSON(frameData)
+			writeMutex.Unlock()
+			if err != nil {
 				log.Printf("❌ Failed to send frame via WebSocket: %v", err)
 				return
 			}

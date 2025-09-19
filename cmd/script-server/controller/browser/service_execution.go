@@ -86,8 +86,8 @@ func ExecuteScriptTask(sessionID, task string, maxSteps int) {
 		return
 	}
 
-	scriptDir := cfg.Script.ScriptDir
-	scriptPath := filepath.Join(scriptDir, cfg.Script.TaskScript)
+	scriptDir := cfg["Script"].(map[string]interface{})["ScriptDir"].(string)
+	scriptPath := filepath.Join(scriptDir, cfg["Script"].(map[string]interface{})["TaskScript"].(string))
 
 	log.Printf("🐍 Executing Python script: %s", scriptPath)
 	log.Printf("🔌 CDP Endpoint: %s", browserSession.CDPEndpoint)
@@ -102,7 +102,7 @@ func ExecuteScriptTask(sessionID, task string, maxSteps int) {
 		browserSession.CDPEndpoint,
 	}
 
-	cmd := exec.Command(cfg.Script.PythonCommand, args...)
+	cmd := exec.Command(cfg["Script"].(map[string]interface{})["PythonCommand"].(string), args...)
 	
 	// Set up environment with LLM configuration if provided
 	env := os.Environ()

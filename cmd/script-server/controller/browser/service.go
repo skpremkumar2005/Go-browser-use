@@ -4,21 +4,22 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"net/http"
 	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"strconv"
 	"strings"
 	"time"
 
-	"github.com/gorilla/websocket"
 	"go-webrtc/cmd/internal/stealth"
-	"go-webrtc/cmd/script-server/config"
+	"go-webrtc/cmd/script-server/libs/utils/helper"
+
+	"github.com/gorilla/websocket"
 )
 
 var (
-	cfg                  *config.Config
+	cfg                  map[string]interface{}
 	scriptSessionManager *ScriptSessionManager
 	browserManager       *BrowserManager
 	wsManager            *WebSocketManager
@@ -27,7 +28,7 @@ var (
 )
 
 // InitializeGlobalVariables initializes all global variables with configuration
-func InitializeGlobalVariables(configuration *config.Config) {
+func InitializeGlobalVariables(configuration map[string]interface{}) {
 	cfg = configuration
 	
 	scriptSessionManager = &ScriptSessionManager{
@@ -37,7 +38,7 @@ func InitializeGlobalVariables(configuration *config.Config) {
 	browserManager = &BrowserManager{
 		sessions:              make(map[string]*BrowserSession),
 		nextPort:              9222,
-		maxConcurrentSessions: configuration.Browser.MaxConcurrentSessions,
+		maxConcurrentSessions: configuration["Browser"].(map[string]interface{})["MaxConcurrentSessions"].(int),
 		activeSessions:        0,
 	}
 	
@@ -50,7 +51,7 @@ func InitializeGlobalVariables(configuration *config.Config) {
 	
 	upgrader = websocket.Upgrader{
 		CheckOrigin: func(r *http.Request) bool {
-			allowedOrigins := config.GetAllowedOrigins()
+			allowedOrigins := helper.GetAllowedOrigins()
 			origin := r.Header.Get("Origin")
 			host := r.Host
 
@@ -70,7 +71,7 @@ func InitializeGlobalVariables(configuration *config.Config) {
 }
 
 // Getter functions for global variables
-func GetConfig() *config.Config {
+func GetConfig() map[string]interface{} {
 	return cfg
 }
 
@@ -148,7 +149,7 @@ func (bm *BrowserManager) CreateBrowserSession(sessionID string, viewport Viewpo
 
 	args := stealth.GetStealthBrowserArguments(sessionID, port, viewport.Width, viewport.Height)
 
-	chromePath := config.GetConfig().Browser.ChromePath
+	chromePath := cfg["Browser"].(map[string]interface{})["ChromePath"].(string)
 	if chromePath == "" {
 		possiblePaths := []string{
 			"google-chrome-stable",
@@ -176,7 +177,7 @@ func (bm *BrowserManager) CreateBrowserSession(sessionID string, viewport Viewpo
 	}
 
 	cmd := exec.Command(chromePath, args...)
-	cmd.Env = append(os.Environ(), "DISPLAY="+cfg.Browser.Display)
+	cmd.Env = append(os.Environ(), "DISPLAY="+cfg["Browser"].(map[string]interface{})["Display"].(string))
 
 	log.Printf("🎭 Launching Chrome with ultra-stealth configuration")
 	log.Printf("🕵️ Using stealth user agent from pool")
@@ -194,7 +195,7 @@ func (bm *BrowserManager) CreateBrowserSession(sessionID string, viewport Viewpo
 	for attempt := 1; attempt <= maxRetries; attempt++ {
 		log.Printf("🔍 Attempting to get CDP endpoint (attempt %d/%d)", attempt, maxRetries)
 
-		cdpHost := config.GetCDPHost()
+		cdpHost := cfg["CDP"].(map[string]interface{})["Host"].(string)
 		resp, err := http.Get(fmt.Sprintf("http://%s:%d/json", cdpHost, port))
 		if err == nil && resp.StatusCode == 200 {
 			var tabs []map[string]interface{}
@@ -232,7 +233,7 @@ func (bm *BrowserManager) CreateBrowserSession(sessionID string, viewport Viewpo
 
 	if websocketURL == "" {
 		log.Printf("⚠️ Could not get CDP endpoint, using fallback")
-		cdpHost := config.GetCDPHost()
+		cdpHost := cfg["CDP"].(map[string]interface{})["Host"].(string)
 		websocketURL = fmt.Sprintf("ws://%s:%d/devtools/browser", cdpHost, port)
 	}
 

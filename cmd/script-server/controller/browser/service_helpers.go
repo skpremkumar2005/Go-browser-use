@@ -167,8 +167,7 @@ func parseTokenUsage(tokenMap map[string]interface{}) *TokenUsage {
 func generateBaseURL(r *http.Request) string {
 	host := r.Host
 	if host == "" {
-		cfg := config.GetConfig()
-		host = fmt.Sprintf("%s:%s", cfg.Server.Host, cfg.Server.Port)
+		host = fmt.Sprintf("%s:%s", config.GlobalEnv["Server"].(map[string]interface{})["Host"].(string), config.GlobalEnv["Server"].(map[string]interface{})["Port"].(string))
 	}
 
 	protocol := "http"

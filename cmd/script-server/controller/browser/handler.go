@@ -70,8 +70,8 @@ func CreateScriptTaskHandler(w http.ResponseWriter, r *http.Request) {
 		taskID = sessionID // Task ID = Session ID for new sessions too
 		
 		viewport := Viewport{
-			Width:  GetConfig().Browser.ViewportWidth,
-			Height: GetConfig().Browser.ViewportHeight,
+			Width:  GetConfig()["Browser"].(map[string]interface{})["ViewportWidth"].(int),
+			Height: GetConfig()["Browser"].(map[string]interface{})["ViewportHeight"].(int),
 		}
 
 		var err error
@@ -123,7 +123,7 @@ func CreateScriptTaskHandler(w http.ResponseWriter, r *http.Request) {
 		// Update maxSteps
 		maxSteps := req.MaxSteps
 		if maxSteps <= 0 {
-			maxSteps = GetConfig().Script.MaxSteps
+			maxSteps = GetConfig()["Script"].(map[string]interface{})["MaxSteps"].(int)
 		}
 		existingTask.Metadata["max_steps"] = maxSteps
 		GetScriptSessionManager().mutex.Unlock()
@@ -150,7 +150,7 @@ func CreateScriptTaskHandler(w http.ResponseWriter, r *http.Request) {
 		// Store maxSteps in metadata
 		maxSteps := req.MaxSteps
 		if maxSteps <= 0 {
-			maxSteps = GetConfig().Script.MaxSteps // Use default from config
+			maxSteps = GetConfig()["Script"].(map[string]interface{})["MaxSteps"].(int) // Use default from config
 		}
 		scriptSession.Metadata["max_steps"] = maxSteps
 
@@ -164,7 +164,7 @@ func CreateScriptTaskHandler(w http.ResponseWriter, r *http.Request) {
 	// Start task execution in background
 	maxSteps := req.MaxSteps
 	if maxSteps <= 0 {
-		maxSteps = GetConfig().Script.MaxSteps
+		maxSteps = GetConfig()["Script"].(map[string]interface{})["MaxSteps"].(int)
 	}
 	go ExecuteScriptTask(taskID, req.Task, maxSteps)
 

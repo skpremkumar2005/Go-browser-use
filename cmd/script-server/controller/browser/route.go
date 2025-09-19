@@ -4,7 +4,7 @@ import (
 	"log"
 	"net/http"
 
-	"go-webrtc/cmd/script-server/config"
+	"go-webrtc/cmd/script-server/libs/utils/helper"
 
 	"github.com/gorilla/mux"
 )
@@ -19,6 +19,8 @@ func SetupRoutes(router *mux.Router) {
 	api.HandleFunc("/browser_use/result/{taskId}", GetTaskResultHandler).Methods("GET")
 	api.HandleFunc("/browser_use/status/{taskId}", GetTaskStatusHandler).Methods("GET")
 	api.HandleFunc("/browser_use/stop/{taskId}", StopTaskHandler).Methods("POST")
+
+	//
 	api.HandleFunc("/task/{sessionId}", GetScriptTaskHandler).Methods("GET")
 	api.HandleFunc("/task/{sessionId}/cancel", CancelScriptTaskHandler).Methods("POST")
 	api.HandleFunc("/sessions", ListScriptSessionsHandler).Methods("GET")
@@ -44,7 +46,7 @@ func SetupRoutes(router *mux.Router) {
 func EnableCORS(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Get allowed origins from config
-		allowedOrigins := config.GetAllowedOrigins()
+		allowedOrigins := helper.GetAllowedOrigins()
 		
 		origin := r.Header.Get("Origin")
 		if origin != "" {

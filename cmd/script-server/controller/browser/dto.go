@@ -182,12 +182,14 @@ type EnhancedTaskResponse struct {
 
 // Simplified Response Structure as requested
 type SimpleTaskResponse struct {
-	Success       bool   `json:"success"`
-	ID            string `json:"id"`
-	SessionID     string `json:"sessionId"`
-	SessionReused bool   `json:"session_reused"`
-	LiveURL       string `json:"live_url"`
-	SocketURL     string `json:"socket_url"`
+	Success       bool       `json:"success"`
+	ID            string     `json:"id"`
+	SessionID     string     `json:"sessionId"`
+	SessionReused bool       `json:"session_reused"`
+	LiveURL       string     `json:"live_url"`
+	SocketURL     string     `json:"socket_url"`
+	Error         *ErrorInfo `json:"error,omitempty"`
+	Message       string     `json:"message,omitempty"`
 }
 
 // TaskResultResponse represents the GET /api/browser_use/result/{taskId} response

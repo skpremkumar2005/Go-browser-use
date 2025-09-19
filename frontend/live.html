@@ -426,13 +426,13 @@
     <script>
         // Global variables
         const taskId = '{{.TaskID}}';
-        const streamingUrl = '/api/stream-screencast/' + taskId;
+        const streamingUrl = '/api/browser_use/stream-screencast/' + taskId;
         
         // Dynamic WebSocket URL generation for port forwarding and HTTPS support
         const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
         const wsHost = window.location.host;
-        const websocketStreamUrl = wsProtocol + '//' + wsHost + '/api/stream-ws/' + taskId;
-        const websocketUrl = wsProtocol + '//' + wsHost + '/api/ws';
+        const websocketStreamUrl = wsProtocol + '//' + wsHost + '/api/browser_use/stream-ws/' + taskId;
+        const websocketUrl = wsProtocol + '//' + wsHost + '/api/browser_use/ws';
         
         const isAutomationMode = {{if .IsAutomation}}true{{else}}false{{end}};
         // Viewport dimensions provided by server for reference
@@ -688,7 +688,7 @@
                     retryCount++;
                     
                     // Try to reset stream flag first
-                    fetch(`/api/reset-stream/${taskId}`, { method: 'POST' })
+                    fetch(`/api/browser_use/reset-stream/${taskId}`, { method: 'POST' })
                         .then(() => {
                             console.log('✅ Stream flag reset, reconnecting...');
                         })
@@ -724,7 +724,7 @@
                                 showLoadingOverlay('Resetting stream...');
                                 
                                 // Try to reset the stream flag on the server
-                                fetch(`/api/reset-stream/${taskId}`, { method: 'POST' })
+                                fetch(`/api/browser_use/reset-stream/${taskId}`, { method: 'POST' })
                                     .then(() => {
                                         console.log('✅ Stream flag reset, retrying...');
                                         showLoadingOverlay('Retrying after reset...');
@@ -1446,7 +1446,7 @@
             
             // Test HTTP connectivity first
             console.log('🧪 Testing HTTP connectivity...');
-            fetch('/api/health')
+            fetch('/api/browser_use/health')
                 .then(response => {
                     console.log('✅ HTTP connection OK, status:', response.status);
                 })

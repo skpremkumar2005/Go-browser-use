@@ -105,6 +105,12 @@ func CreateSimpleErrorResponse(errorType, message string, code int) *SimpleTaskR
 		SessionReused: false,
 		LiveURL:       "",
 		SocketURL:     "",
+		Error: &ErrorInfo{
+			Type:    errorType,
+			Message: message,
+			Code:    code,
+		},
+		Message: message,
 	}
 }
 

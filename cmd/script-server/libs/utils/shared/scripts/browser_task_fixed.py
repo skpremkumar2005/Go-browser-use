@@ -14,12 +14,23 @@ from typing import Optional, Dict, Any
 import threading
 import queue
 
+try:
+    import aiohttp
+    AIOHTTP_AVAILABLE = True
+except ImportError:
+    AIOHTTP_AVAILABLE = False
+    logger.warning("aiohttp not available - pause/resume functionality will be limited")
+
 # Configure logging to capture browser-use logs
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+# Global session_id for status checking
+GLOBAL_SESSION_ID = None
+GLOBAL_SERVER_URL = "http://127.0.0.1:3000"
 
 # Custom log handler to capture agent logs
 class AgentLogHandler(logging.Handler):
@@ -205,6 +216,51 @@ class AgentLogHandler(logging.Handler):
 # Global log handler
 log_handler = AgentLogHandler()
 
+async def check_task_status(session_id: str) -> Dict[str, Any]:
+    """
+    Check task execution status from the Go server with faster timeout
+    Returns: {"should_continue": bool, "is_paused": bool, "is_stopped": bool}
+    """
+    if not AIOHTTP_AVAILABLE:
+        # If aiohttp not available, assume we should continue
+        return {"should_continue": True, "is_paused": False, "is_stopped": False}
+    
+    try:
+        url = f"{GLOBAL_SERVER_URL}/api/browser_use/task-status/{session_id}"
+        async with aiohttp.ClientSession() as session:
+            # Much faster timeout for more responsive pause/resume
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=0.5)) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    return data
+                else:
+                    # If can't reach server, assume we should continue
+                    return {"should_continue": True, "is_paused": False, "is_stopped": False}
+    except Exception as e:
+        logger.debug(f"Failed to check task status: {e}")
+        # If can't reach server, assume we should continue
+        return {"should_continue": True, "is_paused": False, "is_stopped": False}
+
+async def wait_while_paused(session_id: str):
+    """
+    Wait while the task is paused, checking status periodically
+    """
+    logger.info("⏸️ Task execution paused, waiting for resume...")
+    while True:
+        status = await check_task_status(session_id)
+        if status.get("is_stopped", False):
+            logger.info("🛑 Task was stopped, exiting...")
+            sys.exit(0)
+        elif not status.get("is_paused", False):
+            logger.info("▶️ Task resumed, continuing execution...")
+            break
+        else:
+            # Still paused, wait a bit before checking again
+            await asyncio.sleep(1.0)
+
+# Global log handler
+log_handler = AgentLogHandler()
+
 try:
     from browser_use import Agent
     from browser_use.browser import BrowserSession, BrowserProfile
@@ -367,7 +423,7 @@ class UnifiedBrowserUseAgent:
             original_run = self.agent.run
             
             async def intercepted_run():
-                """Intercepted run method to capture more detailed steps"""
+                """Intercepted run method with pause/resume support"""
                 logger.info(f"🎯 Starting task: {task}")
                 log_handler.logs.append({
                     "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime()),
@@ -379,7 +435,162 @@ class UnifiedBrowserUseAgent:
                 })
                 
                 try:
-                    result = await original_run()
+                    # Start a background task to monitor pause/resume status
+                    pause_control = {"should_pause": False, "is_paused": False}
+                    
+                    async def status_monitor():
+                        """Background task to monitor pause/resume status with aggressive checking"""
+                        while True:
+                            try:
+                                status = await check_task_status(GLOBAL_SESSION_ID)
+                                
+                                if status.get("is_stopped", False):
+                                    logger.info("🛑 Task was stopped during execution")
+                                    # Force stop the agent execution
+                                    if hasattr(self.agent, 'controller'):
+                                        self.agent.controller.stop()
+                                    break
+                                
+                                should_pause = status.get("is_paused", False)
+                                if should_pause and not pause_control["is_paused"]:
+                                    logger.info("⏸️ Pause requested, agent will pause after current action")
+                                    pause_control["should_pause"] = True
+                                elif not should_pause and pause_control["is_paused"]:
+                                    logger.info("▶️ Resume requested, agent will continue execution")
+                                    pause_control["should_pause"] = False
+                                    pause_control["is_paused"] = False
+                                
+                                # Much more aggressive checking - every 100ms
+                                await asyncio.sleep(0.1)  
+                            except Exception as e:
+                                logger.debug(f"Status monitor error: {e}")
+                                await asyncio.sleep(0.2)  # Shorter wait on error
+                    
+                    # Start the status monitor in the background
+                    monitor_task = asyncio.create_task(status_monitor())
+                    
+                    # Override agent's run method to respect pause control with aggressive checking
+                    original_agent_run = self.agent.run
+                    
+                    async def pause_aware_agent_run():
+                        """Run agent with pause/resume support and aggressive pause checking"""
+                        try:
+                            # Patch the agent's step execution to check for pause between each step
+                            if hasattr(self.agent, 'controller') and hasattr(self.agent.controller, 'act'):
+                                original_act = self.agent.controller.act
+                                
+                                async def pause_aware_act(*args, **kwargs):
+                                    """Act method with pause checking"""
+                                    # Check if we should pause before each action
+                                    if pause_control["should_pause"] and not pause_control["is_paused"]:
+                                        pause_control["is_paused"] = True
+                                        logger.info("⏸️ Agent execution paused")
+                                        
+                                        # Wait while paused with frequent status checks
+                                        while pause_control["should_pause"]:
+                                            status = await check_task_status(GLOBAL_SESSION_ID)
+                                            if status.get("is_stopped", False):
+                                                logger.info("🛑 Task stopped while paused")
+                                                raise RuntimeError("Task stopped")
+                                            if not status.get("is_paused", False):
+                                                pause_control["should_pause"] = False
+                                                pause_control["is_paused"] = False
+                                                logger.info("▶️ Agent execution resumed")
+                                                break
+                                            await asyncio.sleep(0.05)  # Very frequent checking while paused
+                                    
+                                    # Execute the original action
+                                    return await original_act(*args, **kwargs)
+                                
+                                # Apply the patched method
+                                self.agent.controller.act = pause_aware_act
+                            
+                            # Also patch the LLM call if possible to interrupt during long API calls
+                            if hasattr(self.agent, 'llm') and hasattr(self.agent.llm, 'agenerate'):
+                                original_agenerate = self.agent.llm.agenerate
+                                
+                                async def pause_aware_agenerate(*args, **kwargs):
+                                    """LLM generate with pause checking"""
+                                    # Quick check before making API call
+                                    if pause_control["should_pause"]:
+                                        # Wait until resumed before making expensive API call
+                                        while pause_control["should_pause"]:
+                                            status = await check_task_status(GLOBAL_SESSION_ID)
+                                            if status.get("is_stopped", False):
+                                                raise RuntimeError("Task stopped")
+                                            await asyncio.sleep(0.05)
+                                    
+                                    return await original_agenerate(*args, **kwargs)
+                                
+                                self.agent.llm.agenerate = pause_aware_agenerate
+                            
+                            # Add a more direct interception - patch the agent's main loop
+                            if hasattr(self.agent, '_step'):
+                                original_step = self.agent._step
+                                
+                                async def pause_aware_step(*args, **kwargs):
+                                    """Step method with pause checking"""
+                                    # Check pause status before each step
+                                    if pause_control["should_pause"]:
+                                        pause_control["is_paused"] = True
+                                        logger.info("⏸️ Agent step paused")
+                                        
+                                        while pause_control["should_pause"]:
+                                            status = await check_task_status(GLOBAL_SESSION_ID)
+                                            if status.get("is_stopped", False):
+                                                raise RuntimeError("Task stopped during step")
+                                            if not status.get("is_paused", False):
+                                                pause_control["should_pause"] = False
+                                                pause_control["is_paused"] = False
+                                                logger.info("▶️ Agent step resumed")
+                                                break
+                                            await asyncio.sleep(0.05)
+                                    
+                                    return await original_step(*args, **kwargs)
+                                
+                                self.agent._step = pause_aware_step
+                            
+                            # Run the agent with pause support
+                            result = await original_agent_run()
+                            return result
+                        except Exception as e:
+                            raise
+                    
+                    self.agent.run = pause_aware_agent_run
+                    
+                    # Also add a more direct interception by hooking into the agent's step execution
+                    # This is a deeper level interception to catch pauses even during step processing
+                    if hasattr(self.agent, '_execute_step'):
+                        original_execute_step = self.agent._execute_step
+                        
+                        async def pause_aware_execute_step(*args, **kwargs):
+                            """Execute step with pause checking at the beginning"""
+                            # Check for pause at the start of each step
+                            if pause_control["should_pause"]:
+                                pause_control["is_paused"] = True
+                                logger.info("⏸️ Step execution paused")
+                                
+                                while pause_control["should_pause"]:
+                                    status = await check_task_status(GLOBAL_SESSION_ID)
+                                    if status.get("is_stopped", False):
+                                        raise RuntimeError("Task stopped during step execution")
+                                    if not status.get("is_paused", False):
+                                        pause_control["should_pause"] = False
+                                        pause_control["is_paused"] = False
+                                        logger.info("▶️ Step execution resumed")
+                                        break
+                                    await asyncio.sleep(0.1)
+                            
+                            return await original_execute_step(*args, **kwargs)
+                        
+                        self.agent._execute_step = pause_aware_execute_step
+                    
+                    # Execute the original run with monitoring
+                    result = await self.agent.run()
+                    
+                    # Cancel the monitoring task
+                    monitor_task.cancel()
+                    
                     logger.info("✅ Task completed successfully")
                     log_handler.logs.append({
                         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime()),
@@ -432,6 +643,32 @@ class UnifiedBrowserUseAgent:
                     cleaned_step["next_goal"] = ansi_escape.sub('', cleaned_step["next_goal"]).strip()
                 cleaned_steps.append(cleaned_step)
             
+            # Extract token usage data from the agent
+            token_usage_data = None
+            if hasattr(self.agent, 'token_cost_service') and self.agent.token_cost_service:
+                try:
+                    # Get usage summary from the token cost service
+                    usage_summary = await self.agent.token_cost_service.get_usage_summary()
+                    if usage_summary:
+                        # Get model name from the LLM
+                        model_name = "gpt-4.1"  # Default
+                        if hasattr(self.agent, 'llm') and self.agent.llm:
+                            if hasattr(self.agent.llm, 'model'):
+                                model_name = self.agent.llm.model
+                            elif hasattr(self.agent.llm, 'model_name'):
+                                model_name = self.agent.llm.model_name
+
+                        token_usage_data = {
+                            "total_tokens": usage_summary.total_tokens,
+                            "prompt_tokens": usage_summary.total_prompt_tokens,
+                            "completion_tokens": usage_summary.total_completion_tokens,
+                            "total_cost": usage_summary.total_cost,
+                            "model": model_name
+                        }
+                        logger.info(f"📊 Token usage captured: {token_usage_data}")
+                except Exception as e:
+                    logger.warning(f"⚠️ Failed to capture token usage: {e}")
+            
             # Print final logs as JSON for Go to parse
             final_logs_data = {
                 "logs": log_handler.logs,
@@ -444,7 +681,8 @@ class UnifiedBrowserUseAgent:
                 },
                 "duration": duration_ms,
                 "durationHuman": f"{duration_ms//60000}m {(duration_ms%60000)//1000}s" if duration_ms > 60000 else f"{duration_ms//1000}s",
-                "summary": task_summary
+                "summary": task_summary,
+                "token_usage": token_usage_data
             }
             
             # Output logs data as a separate JSON line for Go to parse
@@ -467,6 +705,32 @@ class UnifiedBrowserUseAgent:
             
             logger.error(f"❌ Task execution failed: {e}")
             
+            # Extract token usage data from the agent (even on failure)
+            token_usage_data = None
+            if hasattr(self.agent, 'token_cost_service') and self.agent.token_cost_service:
+                try:
+                    # Get usage summary from the token cost service
+                    usage_summary = await self.agent.token_cost_service.get_usage_summary()
+                    if usage_summary:
+                        # Get model name from the LLM
+                        model_name = "gpt-4.1"  # Default
+                        if hasattr(self.agent, 'llm') and self.agent.llm:
+                            if hasattr(self.agent.llm, 'model'):
+                                model_name = self.agent.llm.model
+                            elif hasattr(self.agent.llm, 'model_name'):
+                                model_name = self.agent.llm.model_name
+
+                        token_usage_data = {
+                            "total_tokens": usage_summary.total_tokens,
+                            "prompt_tokens": usage_summary.total_prompt_tokens,
+                            "completion_tokens": usage_summary.total_completion_tokens,
+                            "total_cost": usage_summary.total_cost,
+                            "model": model_name
+                        }
+                        logger.info(f"📊 Token usage captured (on error): {token_usage_data}")
+                except Exception as e:
+                    logger.warning(f"⚠️ Failed to capture token usage on error: {e}")
+            
             # Still output logs even on failure
             final_logs_data = {
                 "logs": log_handler.logs,
@@ -478,7 +742,8 @@ class UnifiedBrowserUseAgent:
                     "errors": len([l for l in log_handler.logs if l["level"] == "error"]) + 1  # +1 for this error
                 },
                 "duration": duration_ms,
-                "durationHuman": f"{duration_ms//60000}m {(duration_ms%60000)//1000}s" if duration_ms > 60000 else f"{duration_ms//1000}s"
+                "durationHuman": f"{duration_ms//60000}m {(duration_ms%60000)//1000}s" if duration_ms > 60000 else f"{duration_ms//1000}s",
+                "token_usage": token_usage_data
             }
             
             print(f"[LOGS_DATA] {json.dumps(final_logs_data)}", flush=True)
@@ -500,6 +765,8 @@ class UnifiedBrowserUseAgent:
 
 async def main():
     """Main script entry point"""
+    global GLOBAL_SESSION_ID
+    
     if len(sys.argv) < 4:
         print("Usage: python browser_task_fixed.py <session_id> <task> <max_steps> [cdp_endpoint]")
         sys.exit(1)
@@ -510,6 +777,9 @@ async def main():
     max_steps = int(sys.argv[3])
     cdp_endpoint = sys.argv[4] if len(sys.argv) > 4 else None
     task=task.replace("google", "bing")
+    
+    # Set global session ID for status checking
+    GLOBAL_SESSION_ID = session_id
     
       # Handle newlines in task
     logger.info(f"🚀 Starting browser task script")

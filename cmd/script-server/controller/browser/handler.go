@@ -19,7 +19,7 @@ import (
 // HTTP Handlers
 
 func CreateScriptTaskHandler(w http.ResponseWriter, r *http.Request) {
-	var req ScriptTaskRequest
+	var req ExecuteTaskRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		errorResponse := CreateSimpleErrorResponse("invalid-json", "Invalid JSON in request body", http.StatusBadRequest)
 		w.Header().Set("Content-Type", "application/json")
@@ -493,6 +493,8 @@ func StreamScreencastHandler(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 
+			// Note: We don't stop streaming when paused - streaming continues during pause
+
 			// Capture screenshot with retry logic
 			imageData, err := cdpClient.CaptureScreenshotWithRetry(3)
 			if err != nil {
@@ -794,6 +796,12 @@ func StreamScriptScreenshotsHandler(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 
+			// Continue streaming when task is paused - streaming doesn't stop during pause
+			if currentStatus == "paused" {
+				log.Printf("📸 Task paused but continuing stream for session %s", sessionID)
+				// Don't return - keep streaming during pause
+			}
+
 			// Stop streaming after 5 seconds of completion (reduced from 10)
 			if currentStatus == "completed" && !completionTime.IsZero() && time.Since(completionTime) > 5*time.Second {
 				log.Printf("📸 Stopping stream for session %s (task completed)", sessionID)
@@ -1070,6 +1078,16 @@ func HandleStreamWebSocket(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 
+			// Continue streaming when task is paused - just send a status message
+			if currentStatus == "paused" {
+				log.Printf("📸 Task paused but continuing WebSocket stream for session %s", sessionID)
+				conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+				if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"task_status","status":"paused","message":"Task paused but streaming continues"}`)); err != nil {
+					log.Printf("⚠️ Failed to send task paused message: %v", err)
+				}
+				// Continue streaming instead of returning
+			}
+
 			// Capture screenshot with timeout and retry
 			imageData, err := cdpClient.CaptureScreenshotWithRetry(3)
 			if err != nil {
@@ -1151,19 +1169,19 @@ func GetTaskResultHandler(w http.ResponseWriter, r *http.Request) {
 		UserUploadedFiles: []string{},
 		OutputFiles:       []string{},
 		PublicShareURL:    fmt.Sprintf("%s/session/%s/result", baseURL, taskID),
-		TokenUsage:        session.TokenUsage,
 		Summary:           session.Summary,
 		Metadata: TaskMetadata{
 			SessionID:     session.BrowserID,
 			Logs:          session.Logs,
 			LogsSummary:   calculateLogsSummary(session.Logs),
 		},
+		TokenUsage:        session.TokenUsage, // Include token usage data
 	}
 
-	// Set finished time if completed
+	// Set FinishedAt if the task is completed
 	if session.FinishedAt != nil {
-		finishedTime := session.FinishedAt.Format("2006-01-02T15:04:05.000Z")
-		result.FinishedAt = &finishedTime
+		finishedAtStr := session.FinishedAt.Format("2006-01-02T15:04:05.000Z")
+		result.FinishedAt = &finishedAtStr
 	}
 
 	// Calculate duration
@@ -1213,6 +1231,44 @@ func GetTaskStatusHandler(w http.ResponseWriter, r *http.Request) {
 
 	response := &TaskStatusResponse{
 		Status: session.Status,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(response)
+}
+
+// GetTaskExecutionStatusHandler returns task execution status for Python script polling
+func GetTaskExecutionStatusHandler(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	taskID := vars["taskId"]
+
+	GetScriptSessionManager().mutex.RLock()
+	session := GetScriptSessionManager().sessions[taskID]
+	GetScriptSessionManager().mutex.RUnlock()
+
+	if session == nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"error": "Task not found",
+			"should_continue": false,
+		})
+		return
+	}
+
+	// Determine if the agent should continue execution
+	shouldContinue := session.Status == "running"
+	isPaused := session.Status == "paused"
+	isStopped := session.Status == "stopped" || session.Status == "cancelled" || session.Status == "failed"
+
+	response := map[string]interface{}{
+		"status":          session.Status,
+		"should_continue": shouldContinue,
+		"is_paused":       isPaused,
+		"is_stopped":      isStopped,
+		"task_id":         taskID,
+		"timestamp":       time.Now().Unix(),
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -1296,4 +1352,147 @@ func StopTaskHandler(w http.ResponseWriter, r *http.Request) {
 		"message": "Task stopped successfully. Browser session remains active.",
 		"task_id": taskID,
 	})
+}
+
+// PauseTaskHandler pauses a running task
+func PauseTaskHandler(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	taskID := vars["taskId"]
+
+	log.Printf("⏸️ Pause request received for task ID: %s", taskID)
+
+	GetScriptSessionManager().mutex.Lock()
+	session := GetScriptSessionManager().sessions[taskID]
+	if session == nil {
+		GetScriptSessionManager().mutex.Unlock()
+		log.Printf("❌ Task not found: %s", taskID)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Task not found"})
+		return
+	}
+
+	log.Printf("📊 Current task status: %s", session.Status)
+
+	// Only allow pausing if the task is currently running
+	if session.Status != "running" {
+		GetScriptSessionManager().mutex.Unlock()
+		log.Printf("⚠️ Cannot pause task %s with status: %s", taskID, session.Status)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"error": fmt.Sprintf("Cannot pause task with status '%s'. Task must be running to pause.", session.Status),
+			"current_status": session.Status,
+		})
+		return
+	}
+
+	// Pause the task by setting status - don't kill the process
+	session.Status = "paused"
+	session.UpdatedAt = time.Now()
+	
+	// Store pause metadata - but don't kill the process
+	session.Metadata["paused_at"] = time.Now().Format(time.RFC3339)
+	session.Metadata["pause_reason"] = "user_requested"
+	
+	log.Printf("⏸️ Task paused (status only), Python script will handle pause logic")
+	if session.Process != nil {
+		log.Printf("ℹ️ Process PID %d will continue running but agent execution will pause", session.Process.Process.Pid)
+	}
+
+	GetScriptSessionManager().mutex.Unlock()
+
+	log.Printf("✅ Task paused successfully: %s", taskID)
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"status": "paused",
+		"message": "Task paused successfully. Use resume endpoint to continue.",
+		"task_id": taskID,
+		"paused_at": time.Now().Format(time.RFC3339),
+	})
+}
+
+// ResumeTaskHandler resumes a paused task
+func ResumeTaskHandler(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	taskID := vars["taskId"]
+
+	log.Printf("▶️ Resume request received for task ID: %s", taskID)
+
+	GetScriptSessionManager().mutex.Lock()
+	session := GetScriptSessionManager().sessions[taskID]
+	if session == nil {
+		GetScriptSessionManager().mutex.Unlock()
+		log.Printf("❌ Task not found: %s", taskID)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Task not found"})
+		return
+	}
+
+	log.Printf("📊 Current task status: %s", session.Status)
+
+	// Only allow resuming if the task is currently paused
+	if session.Status != "paused" {
+		GetScriptSessionManager().mutex.Unlock()
+		log.Printf("⚠️ Cannot resume task %s with status: %s", taskID, session.Status)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"error": fmt.Sprintf("Cannot resume task with status '%s'. Task must be paused to resume.", session.Status),
+			"current_status": session.Status,
+		})
+		return
+	}
+
+	// Resume the task by changing status - Python script will detect this
+	session.Status = "running"
+	session.UpdatedAt = time.Now()
+	
+	// Clear pause metadata and add resume info
+	if pausedAt, exists := session.Metadata["paused_at"]; exists {
+		if pausedAtStr, ok := pausedAt.(string); ok {
+			session.Metadata["resumed_at"] = time.Now().Format(time.RFC3339)
+			session.Metadata["pause_duration"] = calculatePauseDuration(pausedAtStr)
+		}
+		delete(session.Metadata, "paused_at")
+		delete(session.Metadata, "pause_reason")
+	}
+	
+	log.Printf("▶️ Task resumed (status changed), Python script will detect and continue execution")
+	if session.Process != nil {
+		log.Printf("ℹ️ Process PID %d will continue with agent execution resuming", session.Process.Process.Pid)
+	}
+
+	GetScriptSessionManager().mutex.Unlock()
+
+	log.Printf("✅ Task resumed successfully: %s", taskID)
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"status": "running",
+		"message": "Task resumed successfully. Execution will continue.",
+		"task_id": taskID,
+		"resumed_at": time.Now().Format(time.RFC3339),
+	})
+}
+
+// Helper function to calculate pause duration
+func calculatePauseDuration(pausedAtStr string) string {
+	pausedAt, err := time.Parse(time.RFC3339, pausedAtStr)
+	if err != nil {
+		return "unknown"
+	}
+	
+	duration := time.Since(pausedAt)
+	if duration < time.Minute {
+		return fmt.Sprintf("%d seconds", int(duration.Seconds()))
+	} else if duration < time.Hour {
+		return fmt.Sprintf("%d minutes", int(duration.Minutes()))
+	} else {
+		return fmt.Sprintf("%.1f hours", duration.Hours())
+	}
 }

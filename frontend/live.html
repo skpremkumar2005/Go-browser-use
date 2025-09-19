@@ -110,84 +110,172 @@
             }
         }
 
-        /* Status Header */
-        .status-header {
-            position: fixed;
-            top: 15px;
-            right: 15px;
-            background: linear-gradient(135deg, rgba(30, 30, 30, 0.95), rgba(20, 20, 20, 0.95));
-            border: 1px solid rgba(255, 255, 255, 0.1);
-            border-radius: 12px;
-            padding: 12px 16px;
-            z-index: 1000;
-            font-size: 12px;
-            max-width: 300px;
-            box-shadow: 0 8px 25px rgba(0, 0, 0, 0.4);
-            backdrop-filter: blur(8px);
-        }
-
-        .status-title {
-            font-weight: 600;
-            color: #4caf50;
-            margin-bottom: 8px;
-            display: flex;
-            align-items: center;
-            gap: 6px;
-        }
-
-        .status-badge {
-            padding: 4px 8px;
-            border-radius: 12px;
-            font-size: 10px;
-            font-weight: bold;
-            text-transform: uppercase;
-            display: inline-block;
-        }
-
-        .status-queued { background: #f39c12; color: white; }
-        .status-running { background: #3498db; color: white; }
-        .status-completed { background: #27ae60; color: white; }
-        .status-failed { background: #e74c3c; color: white; }
-
-        .status-info {
-            color: rgba(255, 255, 255, 0.7);
-            font-size: 10px;
-            margin: 2px 0;
-        }
-
-        /* Control Panel */
-        .control-panel {
-            position: fixed;
-            bottom: 20px;
-            right: 20px;
-            background: linear-gradient(135deg, rgba(30, 30, 30, 0.95), rgba(20, 20, 20, 0.95));
-            border: 1px solid rgba(255, 255, 255, 0.1);
-            border-radius: 12px;
-            padding: 15px;
-            z-index: 1000;
-            box-shadow: 0 8px 25px rgba(0, 0, 0, 0.4);
-            backdrop-filter: blur(8px);
-        }
-
-        .control-buttons {
-            display: flex;
-            gap: 10px;
-            flex-wrap: wrap;
-        }
+        /* Removed control panel styles for cleaner UI */
 
         .control-btn {
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             color: white;
             border: none;
-            border-radius: 8px;
-            padding: 8px 12px;
+            padding: 8px 16px;
+            border-radius: 6px;
             cursor: pointer;
-            font-size: 11px;
+            font-size: 14px;
+            font-weight: 500;
+            transition: all 0.2s ease;
+        }
+
+        .control-btn:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 4px 12px rgba(102, 126, 234, 0.3);
+        }
+
+        .control-btn:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        /* Take Control Overlay - Clean button without dark background */
+        .take-control-overlay {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            background: transparent;
+            color: white;
+            padding: 0;
+            border: none;
+            z-index: 2000;
+            text-align: center;
+            display: none;
+        }
+
+        .take-control-btn {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 16px;
             font-weight: 600;
+            margin-top: 0;
             transition: all 0.3s ease;
+            box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+            backdrop-filter: blur(10px);
+        }
+
+        .take-control-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(102, 126, 234, 0.4);
+        }
+
+        .take-control-btn:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        /* Control Dock */
+        .control-dock {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            background: rgba(30, 30, 30, 0.95);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            border-radius: 12px;
+            padding: 15px;
+            z-index: 1500;
+            box-shadow: 0 8px 25px rgba(0, 0, 0, 0.4);
+            backdrop-filter: blur(8px);
+            display: none;
+            min-width: 200px;
+        }
+
+        .control-dock-header {
             display: flex;
             align-items: center;
-            gap: 4px;
+            justify-content: space-between;
+            margin-bottom: 10px;
+        }
+
+        .control-status {
+            background: #f39c12;
+            color: white;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 12px;
+            font-weight: 600;
+        }
+
+        .control-status.paused {
+            background: #e74c3c;
+        }
+
+        .resume-btn {
+            background: linear-gradient(135deg, #27ae60 0%, #2ecc71 100%);
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 500;
+            width: 100%;
+            transition: all 0.2s ease;
+        }
+
+        .resume-btn:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 4px 12px rgba(39, 174, 96, 0.3);
+        }
+
+        .resume-btn:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        /* Interaction disabled overlay - visual only, don't block events */
+        .interaction-disabled {
+            opacity: 0.8;
+            position: relative;
+        }
+
+        .interaction-disabled::after {
+            content: '🤖 Agent Control';
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            background: rgba(0, 0, 0, 0.8);
+            color: white;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 12px;
+            font-weight: 600;
+            z-index: 100;
+            pointer-events: none;
+        }
+        
+        /* User control state */
+        .user-control {
+            opacity: 1;
+            border: 2px solid #27ae60;
+            border-radius: 8px;
+        }
+        
+        .user-control::after {
+            content: '🎮 Manual Control';
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            background: rgba(39, 174, 96, 0.9);
+            color: white;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 12px;
+            font-weight: 600;
+            z-index: 100;
+            pointer-events: none;
         }
 
         .control-btn:hover {
@@ -206,47 +294,6 @@
 
         .control-btn.secondary:hover {
             background: linear-gradient(135deg, #5a67d8 0%, #3c4a6b 100%);
-        }
-
-        /* Task Info Panel */
-        .task-info-panel {
-            position: fixed;
-            bottom: 20px;
-            left: 20px;
-            background: linear-gradient(135deg, rgba(30, 30, 30, 0.95), rgba(20, 20, 20, 0.95));
-            border: 1px solid rgba(255, 255, 255, 0.1);
-            border-radius: 12px;
-            padding: 15px;
-            z-index: 1000;
-            font-size: 12px;
-            max-width: 350px;
-            box-shadow: 0 8px 25px rgba(0, 0, 0, 0.4);
-            backdrop-filter: blur(8px);
-        }
-
-        .task-info-title {
-            font-weight: 600;
-            color: #4caf50;
-            margin-bottom: 8px;
-            display: flex;
-            align-items: center;
-            gap: 6px;
-        }
-
-        .task-info-item {
-            color: rgba(255, 255, 255, 0.7);
-            font-size: 10px;
-            margin: 2px 0;
-            display: flex;
-            justify-content: space-between;
-        }
-
-        .task-info-label {
-            font-weight: 500;
-        }
-
-        .task-info-value {
-            color: rgba(255, 255, 255, 0.9);
         }
 
         /* Error Message */
@@ -319,26 +366,7 @@
 
         /* Responsive design */
         @media (max-width: 768px) {
-            .status-header {
-                top: 10px;
-                right: 10px;
-                max-width: 250px;
-                padding: 10px 12px;
-            }
-
-            .control-panel {
-                bottom: 10px;
-                right: 10px;
-                padding: 12px;
-            }
-
-            .task-info-panel {
-                bottom: 10px;
-                left: 10px;
-                right: 10px;
-                max-width: none;
-                padding: 12px;
-            }
+            /* Removed responsive styles for deleted panels */
 
             .live-indicator {
                 top: 10px;
@@ -360,9 +388,26 @@
 </head>
 <body>
     <div class="streaming-container">
-        <div class="browser-screen">
-            <img id="browserCanvas" src="" alt="Live Browser Stream">
-            
+    <!-- Browser Canvas -->
+    <div class="browser-container">
+        <img id="browserCanvas" class="browser-canvas" alt="Browser Stream" />
+        
+        <!-- Take Control Overlay -->
+        <div id="takeControlOverlay" class="take-control-overlay">
+            <h3>🎯 Take Control</h3>
+            <p>Pause the agent to interact with the browser directly</p>
+            <button id="takeControlBtn" class="take-control-btn">Take Control</button>
+        </div>
+    </div>
+    
+    <!-- Control Dock (shown when user has control) -->
+    <div id="controlDock" class="control-dock">
+        <div class="control-dock-header">
+            <span>🎮 Manual Control</span>
+            <span id="controlStatus" class="control-status paused">PAUSED</span>
+        </div>
+        <button id="resumeAgentBtn" class="resume-btn">Resume Agent</button>
+    </div>        
             <!-- Loading overlay for connection issues -->
             <div class="loading-overlay" id="loadingOverlay">
                 <div class="loading-spinner-small"></div>
@@ -374,57 +419,7 @@
                 {{if .IsAutomation}}🤖 AUTOMATION{{else}}🔴 LIVE{{end}}
             </div>
 
-            <!-- Status Header -->
-            <div class="status-header" id="statusHeader">
-                <div class="status-title">
-                    {{if .IsAutomation}}🤖 Automation Status{{else}}🎯 Task Status{{end}}
-                    <span class="status-badge status-{{.Status}}" id="statusBadge">{{.Status}}</span>
-                </div>
-                <div class="status-info" id="statusInfo">Task: {{.Task}}</div>
-                <div class="status-info" id="statusTime">Started: {{.CreatedAt}}</div>
-                {{if .IsAutomation}}<div class="status-info">🤖 Browser-use automation active</div>{{end}}
-            </div>
-
-            <!-- Control Panel -->
-            <div class="control-panel" id="controlPanel">
-                <div class="control-buttons">
-                    <button class="control-btn" onclick="toggleFullscreen()" title="Toggle Fullscreen (F key)">
-                        ⛶ Fullscreen
-                    </button>
-                    <button class="control-btn secondary" onclick="refreshStream()" title="Refresh Stream (R key)">
-                        🔄 Refresh
-                    </button>
-                    <button class="control-btn secondary" onclick="runConnectionDiagnostics()" title="Run Connection Diagnostics">
-                        🔧 Debug
-                    </button>
-                    <button class="control-btn secondary" onclick="goBack()" title="Go Back">
-                        ← Back
-                    </button>
-                </div>
-            </div>
-
-            <!-- Task Info Panel -->
-            <div class="task-info-panel" id="taskInfoPanel">
-                <div class="task-info-title">
-                    📋 Task Details
-                </div>
-                <div class="task-info-item">
-                    <span class="task-info-label">Task ID:</span>
-                    <span class="task-info-value" id="taskId">{{.TaskID}}</span>
-                </div>
-                <div class="task-info-item">
-                    <span class="task-info-label">Browser ID:</span>
-                    <span class="task-info-value" id="browserId">{{.BrowserID}}</span>
-                </div>
-                <div class="task-info-item">
-                    <span class="task-info-label">Status:</span>
-                    <span class="task-info-value" id="taskStatus">{{.Status}}</span>
-                </div>
-                <div class="task-info-item">
-                    <span class="task-info-label">Started:</span>
-                    <span class="task-info-value" id="taskStarted">{{.CreatedAt}}</span>
-                </div>
-            </div>
+            <!-- Removed extra floating panels for cleaner UI -->
         </div>
     </div>
 
@@ -461,19 +456,41 @@
         let typingBuffer = '';
         let typingFlushTimer = null;
         const TYPING_DELAY_MS = 40; // faster flush for lower latency
+        
+        // Take Control state management
+        let isUserControl = false;
+        let isPausing = false;
+        let isResuming = false;
+        let controlState = 'agent_control'; // agent_control, pausing, user_control, resuming
+        
+        // Rate limiting for API calls
+        let lastApiCall = 0;
+        const API_RATE_LIMIT_MS = 1000; // Minimum 1 second between API calls
 
-        // DOM elements
-        const browserCanvas = document.getElementById('browserCanvas');
-        const loadingOverlay = document.getElementById('loadingOverlay');
-        const loadingText = document.getElementById('loadingText');
-        const statusBadge = document.getElementById('statusBadge');
-        const taskStatus = document.getElementById('taskStatus');
-        const statusInfo = document.getElementById('statusInfo');
-        const statusTime = document.getElementById('statusTime');
-        const liveIndicator = document.getElementById('liveIndicator');
-        const statusHeader = document.getElementById('statusHeader');
-        const controlPanel = document.getElementById('controlPanel');
-        const taskInfoPanel = document.getElementById('taskInfoPanel');
+        // DOM elements - will be initialized when DOM is ready
+        let browserCanvas, loadingOverlay, loadingText, liveIndicator;
+        let takeControlOverlay, takeControlBtn, controlDock, resumeAgentBtn, controlStatus;
+        
+        // Initialize DOM elements
+        function initDOMElements() {
+            browserCanvas = document.getElementById('browserCanvas');
+            loadingOverlay = document.getElementById('loadingOverlay');
+            loadingText = document.getElementById('loadingText');
+            liveIndicator = document.getElementById('liveIndicator');
+            takeControlOverlay = document.getElementById('takeControlOverlay');
+            takeControlBtn = document.getElementById('takeControlBtn');
+            controlDock = document.getElementById('controlDock');
+            resumeAgentBtn = document.getElementById('resumeAgentBtn');
+            controlStatus = document.getElementById('controlStatus');
+            
+            // Validate critical elements
+            if (!browserCanvas) console.error('❌ browserCanvas not found');
+            if (!takeControlBtn) console.error('❌ takeControlBtn not found');
+            if (!resumeAgentBtn) console.error('❌ resumeAgentBtn not found');
+            if (!takeControlOverlay) console.error('❌ takeControlOverlay not found');
+            if (!controlDock) console.error('❌ controlDock not found');
+            if (!liveIndicator) console.error('❌ liveIndicator not found');
+        }
 
         // Initialize the live stream
         function initLiveStream() {
@@ -518,12 +535,19 @@
                             // Convert base64 to image and display
                             browserCanvas.src = 'data:image/jpeg;base64,' + data.data;
                             lastStreamUpdate = Date.now();
-                        } else if (data.type === 'task_complete') {
+                        } else if (message.type === 'task_complete') {
                             console.log('📸 Task completed, stopping stream');
                             isStreaming = false;
                             streamWs.close();
-                        } else if (data.type === 'error') {
-                            console.error('❌ Stream error:', data.message);
+                        } else if (message.type === 'task_update') {
+                            updateTaskStatus(message.status, message.output);
+                        } else if (message.type === 'task_status') {
+                            // Handle pause/resume status updates
+                            console.log('📊 Task status update:', message.status);
+                            updateControlUI(message.status);
+                            updateTaskStatus(message.status);
+                        } else if (message.type === 'error') {
+                            console.error('❌ Stream error:', message.message);
                             isStreaming = false;
                             streamWs.close();
                         }
@@ -785,15 +809,12 @@
             }, 15000); // Increased to 15 seconds
         }
 
-        // Stream health monitoring
+        // Stream health monitoring (disabled to reduce API calls)
         function startStreamHealthCheck() {
             stopStreamHealthCheck(); // Clear any existing check
             
-            // Stream health check disabled - let error handling manage reconnections
-            streamHealthCheck = setInterval(() => {
-                // Just update timestamp, don't force refresh
-                // Let the error handling manage reconnections
-            }, 10000);
+            // Stream health check completely disabled to prevent API spam
+            console.log('📊 Stream health check disabled to reduce server load');
         }
 
         function stopStreamHealthCheck() {
@@ -1052,6 +1073,13 @@
         // Click handler
         function handleBrowserClick(event) {
             event.preventDefault();
+            
+            // Block if user doesn't have control
+            if (!isUserControl) {
+                console.log('🚫 Click blocked - agent in control');
+                return;
+            }
+            
             const scaled = getScaledCoordinates(event);
             console.log(`🖱️ Browser click at (display->source): (${Math.round(event.clientX)}, ${Math.round(event.clientY)}) -> (${scaled.x}, ${scaled.y})`);
             
@@ -1094,6 +1122,13 @@
         // Scroll handler
         function handleBrowserScroll(event) {
             event.preventDefault();
+            
+            // Block if user doesn't have control
+            if (!isUserControl) {
+                console.log('🚫 Scroll blocked - agent in control');
+                return;
+            }
+            
             const deltaY = event.deltaY;
             const deltaX = event.deltaX;
             
@@ -1133,6 +1168,12 @@
             const specialKeys = ['Escape', 'Tab', 'Enter', 'Backspace', 'Delete', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Home', 'End', 'PageUp', 'PageDown'];
 
             const isModifierOnly = (event.key === 'Shift' || event.key === 'Alt' || event.key === 'Control' || event.key === 'Meta');
+
+            // Block if user doesn't have control (except for Alt shortcuts)
+            if (!isUserControl && !event.altKey) {
+                console.log('🚫 Keyboard blocked - agent in control');
+                return;
+            }
 
             // Always keep our page from stealing focus/scroll when controlling remote
             event.preventDefault();
@@ -1181,8 +1222,14 @@
             }
         });
 
-        // Execute action via WebSocket
+        // Execute action via WebSocket (gated by control state)
         function executeAction(action, data) {
+            // Block interactions unless user has control
+            if (!isUserControl) {
+                console.log(`🚫 Action blocked - agent in control: ${action}`);
+                return;
+            }
+            
             if (ws && ws.readyState === WebSocket.OPEN) {
                 ws.send(JSON.stringify({
                     type: 'action',
@@ -1192,10 +1239,194 @@
                 }));
                 console.log(`🎯 Executed ${action}:`, data);
             } else {
-                console.warn('⚠️ WebSocket not connected, action not sent');
+                console.warn('⚠️ WebSocket not connected, cannot execute action:', action);
             }
         }
 
+        // Take Control Functions
+        async function takeControl() {
+            if (isPausing || isUserControl) return;
+            
+            // Rate limiting check
+            const now = Date.now();
+            if (now - lastApiCall < API_RATE_LIMIT_MS) {
+                console.log('⏱️ Rate limited: Please wait before making another request');
+                showToast('Please wait before making another request', 'info');
+                return;
+            }
+            lastApiCall = now;
+            
+            // Validate elements
+            if (!takeControlBtn || !takeControlOverlay || !controlDock || !browserCanvas) {
+                console.error('❌ Take Control: Required DOM elements missing');
+                showToast('UI elements not ready. Please refresh the page.', 'error');
+                return;
+            }
+            
+            isPausing = true;
+            controlState = 'pausing';
+            takeControlBtn.disabled = true;
+            takeControlBtn.textContent = 'Pausing Agent...';
+            
+            try {
+                const response = await fetch(`/api/browser_use/pause/${taskId}`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' }
+                });
+                
+                if (response.ok) {
+                    const result = await response.json();
+                    console.log('✅ Agent paused successfully:', result);
+                    
+                    // Switch to user control
+                    isUserControl = true;
+                    controlState = 'user_control';
+                    
+                    // Update UI
+                    takeControlOverlay.style.display = 'none';
+                    controlDock.style.display = 'block';
+                    browserCanvas.classList.remove('interaction-disabled');
+                    browserCanvas.classList.add('user-control');
+                    
+                    // Show success feedback
+                    showToast('🎮 Control taken! You can now interact with the browser.', 'success');
+                } else {
+                    const error = await response.json();
+                    console.error('❌ Failed to pause agent:', error);
+                    showToast(`Failed to take control: ${error.error || 'Unknown error'}`, 'error');
+                }
+            } catch (error) {
+                console.error('❌ Take control error:', error);
+                showToast('Failed to take control. Please try again.', 'error');
+            } finally {
+                isPausing = false;
+                takeControlBtn.disabled = false;
+                takeControlBtn.textContent = 'Take Control';
+                
+                if (!isUserControl) {
+                    controlState = 'agent_control';
+                }
+            }
+        }
+        
+        async function resumeAgent() {
+            if (isResuming || !isUserControl) return;
+            
+            // Rate limiting check
+            const now = Date.now();
+            if (now - lastApiCall < API_RATE_LIMIT_MS) {
+                console.log('⏱️ Rate limited: Please wait before making another request');
+                showToast('Please wait before making another request', 'info');
+                return;
+            }
+            lastApiCall = now;
+            
+            // Validate elements
+            if (!resumeAgentBtn || !controlDock || !browserCanvas) {
+                console.error('❌ Resume Agent: Required DOM elements missing');
+                showToast('UI elements not ready. Please refresh the page.', 'error');
+                return;
+            }
+            
+            isResuming = true;
+            controlState = 'resuming';
+            resumeAgentBtn.disabled = true;
+            resumeAgentBtn.textContent = 'Resuming...';
+            
+            // Flush any pending typing
+            flushTypingBuffer();
+            
+            try {
+                const response = await fetch(`/api/browser_use/resume/${taskId}`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' }
+                });
+                
+                if (response.ok) {
+                    const result = await response.json();
+                    console.log('✅ Agent resumed successfully:', result);
+                    
+                    // Switch back to agent control
+                    isUserControl = false;
+                    controlState = 'agent_control';
+                    
+                    // Update UI
+                    controlDock.style.display = 'none';
+                    browserCanvas.classList.add('interaction-disabled');
+                    browserCanvas.classList.remove('user-control');
+                    
+                    // Show Take Control overlay again after a short delay
+                    setTimeout(() => {
+                        if (!isUserControl && !taskCompleted && takeControlOverlay) {
+                            takeControlOverlay.style.display = 'block';
+                            console.log('🎯 Take Control overlay shown again');
+                        }
+                    }, 2000); // Show after 2 seconds
+                    
+                    // Show success feedback
+                    showToast('🤖 Agent resumed! Browser control returned to agent.', 'success');
+                } else {
+                    const error = await response.json();
+                    console.error('❌ Failed to resume agent:', error);
+                    showToast(`Failed to resume agent: ${error.error || 'Unknown error'}`, 'error');
+                }
+            } catch (error) {
+                console.error('❌ Resume agent error:', error);
+                showToast('Failed to resume agent. Please try again.', 'error');
+            } finally {
+                isResuming = false;
+                resumeAgentBtn.disabled = false;
+                resumeAgentBtn.textContent = 'Resume Agent';
+                
+                if (isUserControl) {
+                    controlState = 'user_control';
+                }
+            }
+        }
+        
+        function updateControlUI(status) {
+            if (status === 'running' && isUserControl) {
+                // External resume detected - switch back to agent control
+                isUserControl = false;
+                controlState = 'agent_control';
+                controlDock.style.display = 'none';
+                browserCanvas.classList.add('interaction-disabled');
+                browserCanvas.classList.remove('user-control');
+                showToast('🤖 Agent resumed externally', 'info');
+            } else if (status === 'paused' && !isUserControl && !isPausing) {
+                // External pause detected - show take control option
+                takeControlOverlay.style.display = 'block';
+            } else if (status === 'running' && !isUserControl) {
+                // Agent is running and we're not in control - hide take control overlay
+                takeControlOverlay.style.display = 'none';
+            }
+        }
+        
+        function showToast(message, type = 'info') {
+            // Simple toast notification
+            const toast = document.createElement('div');
+            toast.style.cssText = `
+                position: fixed;
+                top: 20px;
+                right: 20px;
+                background: ${type === 'success' ? '#27ae60' : type === 'error' ? '#e74c3c' : '#3498db'};
+                color: white;
+                padding: 12px 20px;
+                border-radius: 6px;
+                z-index: 3000;
+                font-size: 14px;
+                box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+                animation: slideIn 0.3s ease;
+            `;
+            toast.textContent = message;
+            document.body.appendChild(toast);
+            
+            setTimeout(() => {
+                toast.style.animation = 'slideOut 0.3s ease';
+                setTimeout(() => toast.remove(), 300);
+            }, 3000);
+        }
+        
         // Connection diagnostics for port forwarding issues
         function runConnectionDiagnostics() {
             console.log('🔧 === CONNECTION DIAGNOSTICS ===');
@@ -1297,27 +1528,15 @@
             window.history.back();
         }
 
-        // Toggle UI panels visibility
+        // Toggle UI panels visibility (simplified for remaining elements)
         function toggleUIPanels() {
-            const panels = [statusHeader, controlPanel, taskInfoPanel];
-            const isVisible = statusHeader.style.display !== 'none';
-            
-            panels.forEach(panel => {
-                panel.style.display = isVisible ? 'none' : 'block';
-            });
-            
-            // Update live indicator to show toggle state
-            if (isVisible) {
-                liveIndicator.innerHTML = '👁️ UI Hidden';
-                liveIndicator.style.background = 'linear-gradient(135deg, #6c757d, #495057)';
-            } else {
-                liveIndicator.innerHTML = '🔴 LIVE';
-                liveIndicator.style.background = 'linear-gradient(135deg, #e74c3c, #c0392b)';
+            // Only toggle the live indicator since other panels were removed
+            if (liveIndicator) {
+                const isVisible = liveIndicator.style.display !== 'none';
+                liveIndicator.style.display = isVisible ? 'none' : 'block';
+                console.log(isVisible ? '🙈 Live indicator hidden' : '👀 Live indicator shown');
             }
         }
-
-        // Add click handler to live indicator for UI toggle
-        liveIndicator.addEventListener('click', toggleUIPanels);
 
         function showError(message) {
             const errorDiv = document.createElement('div');
@@ -1330,8 +1549,7 @@
             document.body.appendChild(errorDiv);
         }
 
-        // Initialize when page loads
-        document.addEventListener('DOMContentLoaded', initLiveStream);
+        // Note: initLiveStream is now called from initializeApp()
 
         // Handle page visibility changes
         document.addEventListener('visibilitychange', function() {
@@ -1391,6 +1609,99 @@
             console.log('✅ Cleanup completed');
         });
 
+        // Initialize Take Control functionality
+        function initTakeControl() {
+            console.log('🎮 Initializing Take Control functionality...');
+            
+            // Validate required elements
+            if (!browserCanvas || !takeControlBtn || !resumeAgentBtn || !takeControlOverlay || !controlDock) {
+                console.error('❌ Critical DOM elements missing for Take Control functionality');
+                return;
+            }
+            
+            // Set initial state - agent in control, interactions disabled
+            browserCanvas.classList.add('interaction-disabled');
+            
+            // Event listeners with null checks
+            if (takeControlBtn) {
+                takeControlBtn.addEventListener('click', takeControl);
+                console.log('✅ Take Control button listener added');
+            }
+            
+            if (resumeAgentBtn) {
+                resumeAgentBtn.addEventListener('click', resumeAgent);
+                console.log('✅ Resume Agent button listener added');
+            }
+            
+            // Take Control overlay is now a clean button - no click-to-hide needed
+            console.log('✅ Take Control overlay configured as clean button');
+            
+            // Add click handler to live indicator for UI toggle
+            if (liveIndicator) {
+                liveIndicator.addEventListener('click', toggleUIPanels);
+                console.log('✅ Live indicator click handler added');
+            }
+            
+            // Show take control overlay after stream starts and task is running
+            if (isAutomationMode && takeControlOverlay) {
+                setTimeout(() => {
+                    // Only show if agent is still in control and task is running
+                    if (!isUserControl && !taskCompleted && takeControlOverlay) {
+                        takeControlOverlay.style.display = 'block';
+                        console.log('🎯 Take Control overlay shown');
+                    }
+                }, 3000); // Show after 3 seconds
+            }
+            
+            console.log('✅ Take Control initialization complete');
+        }
+        
+        // Add CSS animations for toasts
+        const style = document.createElement('style');
+        style.textContent = `
+            @keyframes slideIn {
+                from { transform: translateX(100%); opacity: 0; }
+                to { transform: translateX(0); opacity: 1; }
+            }
+            @keyframes slideOut {
+                from { transform: translateX(0); opacity: 1; }
+                to { transform: translateX(100%); opacity: 0; }
+            }
+        `;
+        document.head.appendChild(style);
+        
+        // Main initialization function
+        function initializeApp() {
+            console.log('🚀 Initializing application...');
+            
+            // Check for multiple tabs warning
+            if (document.hasFocus()) {
+                console.log('📺 This tab is active - good!');
+            } else {
+                console.warn('⚠️ This tab is not focused - multiple tabs may cause API spam');
+            }
+            
+            // Step 1: Initialize DOM elements
+            initDOMElements();
+            
+            // Step 2: Initialize Take Control functionality
+            initTakeControl();
+            
+            // Step 3: Initialize live stream
+            initLiveStream();
+            
+            console.log('✅ Application initialization complete');
+            console.log('📊 To reduce server load: Close other browser tabs with this page');
+        }
+        
+        // Initialize when DOM is ready
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', initializeApp);
+        } else {
+            // DOM already loaded
+            initializeApp();
+        }
+
         // Keyboard shortcuts
         document.addEventListener('keydown', function(event) {
             // Require Alt key for local UI shortcuts to avoid interfering with remote typing
@@ -1412,6 +1723,16 @@
             if (event.key.toLowerCase() === 'r' && !inText) {
                 event.preventDefault();
                 refreshStream();
+            }
+            // Take control with Alt+T
+            if (event.key.toLowerCase() === 't' && !inText && !isUserControl) {
+                event.preventDefault();
+                takeControl();
+            }
+            // Resume agent with Alt+R when in control
+            if (event.key.toLowerCase() === 'r' && !inText && isUserControl) {
+                event.preventDefault();
+                resumeAgent();
             }
         });
     </script>
